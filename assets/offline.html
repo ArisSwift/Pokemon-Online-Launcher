@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Pokem Online</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    place-content: center;
+    text-align: center;
+    gap: 10px;
+    padding: 0 8vmin;
+    background: #1b2850;
+    color: #fff;
+    font: 16px/1.5 system-ui, sans-serif;
+  }
+  h1 { margin: 0; font-size: 24px; font-weight: 600; }
+  p { margin: 0; opacity: .75; }
+</style>
+<h1>Can't reach pokem.onl</h1>
+<p>Checking the connection and trying again.</p>
+<script>
+  // The launcher has no reload button, so the page retries itself. The shell shows this
+  // page on a failed load and on a renderer that dies twice in a minute.
+  setTimeout(() => location.replace("https://pokem.onl/"), 5000);
+</script>
+</html>

@@ -1,12 +1,36 @@
 use cef::*;
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "1574411473172561931";
 const APP_NAME: &str = "Pokem Online";
 const GAME_URL: &str = "https://pokem.onl/";
+
+/// The renderer dying twice inside a minute means the page is dying as it loads, so the
+/// recovery goes by way of the offline page instead of spinning on a broken page.
+const CRASH_GAP_MS: u64 = 60_000;
+
+/// Accelerator ids for the keys a bare Chromium window does not wire up itself.
+const CMD_FULLSCREEN: i32 = 1;
+const CMD_RELOAD: i32 = 2;
+/// F11 and F5 from Chromium's keyboard codes.
+const KEY_F11: i32 = 0x7a;
+const KEY_F5: i32 = 0x74;
+
+static LAST_RECOVERY_MS: AtomicU64 = AtomicU64::new(0);
+/// Set while the browser is closing, so a renderer going away is not mistaken for a
+/// crash and reloaded on the way out.
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// The launcher icon, decoded by CEF itself. `add_png` takes the file as-is, so the
 /// repo keeps one PNG and there is no image crate in the build.
@@ -133,9 +157,80 @@ const PROBE_JS: &str = r##"
 })();
 "##;
 
+/// Files that ship beside the binary: the splash, the offline page. A released build
+/// keeps `assets/` next to the executable, while `cargo build` leaves it in the repo,
+/// two levels up from `target/<profile>`.
+fn asset_path(name: &str) -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [
+                dir.join("assets").join(name),
+                dir.join("../../assets").join(name),
+            ] {
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(name)
+}
+
+/// Chromium wants forward slashes and a third slash before a drive letter.
+fn file_url(path: &std::path::Path) -> String {
+    let path = path.display().to_string().replace('\\', "/");
+    let prefix = if path.starts_with('/') { "file://" } else { "file:///" };
+    format!("{prefix}{path}")
+}
+
 fn splash_url() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/splash/index.html");
-    format!("file://{}", path.display())
+    file_url(&asset_path("splash/index.html"))
+}
+
+fn offline_url() -> String {
+    file_url(&asset_path("offline.html"))
+}
+
+/// The game's own origin, and nothing that merely begins with its name.
+fn is_game_url(url: &str) -> bool {
+    match url.strip_prefix("https://pokem.onl") {
+        Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#'),
+        None => false,
+    }
+}
+
+/// Our own pages are the only files this window is allowed to show.
+fn is_launcher_page(url: &str) -> bool {
+    let url = url.replace('\\', "/");
+    url.starts_with("file://")
+        && (url.contains("/assets/splash/") || url.contains("/assets/offline.html"))
+}
+
+/// Hand a link to the desktop's own browser. The window only ever shows the game, so
+/// anything that is not the game belongs outside it.
+fn open_external(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
+
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.arg("url.dll,FileProtocolHandler");
+        // No console window should flash behind the launcher.
+        command.creation_flags(0x0800_0000);
+        command
+    };
+
+    command.arg(url);
+    let _ = command.spawn();
 }
 
 fn main() {
@@ -162,6 +257,16 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
         let name = CefString::from("autoplay-policy");
         let value = CefString::from("no-user-gesture-required");
         cmd.append_switch_with_value(Some(&name), Some(&value));
+
+        // A covered window otherwise loses its timers, and with them its place online;
+        // the game expects to keep playing while the player looks at something else.
+        let occluded = CefString::from("disable-backgrounding-occluded-windows");
+        cmd.append_switch(Some(&occluded));
+
+        // On a machine with two GPUs Chromium may pick the integrated one and leave the
+        // game on it.
+        let gpu = CefString::from("force_high_performance_gpu");
+        cmd.append_switch(Some(&gpu));
     }
 
     spawn_presence();
@@ -222,6 +327,68 @@ fn clear_stale_singleton(cache: &str) {
 
 #[cfg(not(target_os = "linux"))]
 fn clear_stale_singleton(_cache: &str) {}
+
+/// The size the window had last time, and whether it was maximised. The position is
+/// deliberately not kept: a screen that has been unplugged since cannot strand it.
+#[derive(Clone, Copy)]
+struct Shape {
+    width: i32,
+    height: i32,
+    maximized: bool,
+}
+
+impl Default for Shape {
+    fn default() -> Self {
+        Self {
+            width: 1280,
+            height: 800,
+            maximized: false,
+        }
+    }
+}
+
+fn shape_file() -> std::path::PathBuf {
+    std::path::PathBuf::from(cache_dir()).join("window.json")
+}
+
+fn read_shape() -> Shape {
+    let mut shape = Shape::default();
+    let Ok(text) = std::fs::read_to_string(shape_file()) else {
+        return shape;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return shape;
+    };
+    let number = |key: &str| value.get(key).and_then(serde_json::Value::as_i64);
+    if let Some(width) = number("width") {
+        shape.width = (width as i32).clamp(640, 10_000);
+    }
+    if let Some(height) = number("height") {
+        shape.height = (height as i32).clamp(400, 10_000);
+    }
+    shape.maximized = value
+        .get("maximized")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    shape
+}
+
+/// A maximised window reports the maximised bounds, so keep the last normal size and
+/// only record the flag while it is maximised.
+fn keep_shape(window: &mut Window) {
+    let mut shape = read_shape();
+    shape.maximized = window.is_maximized() == 1;
+    if !shape.maximized {
+        let bounds = window.bounds();
+        shape.width = bounds.width;
+        shape.height = bounds.height;
+    }
+    let text = format!(
+        "{{\"width\":{},\"height\":{},\"maximized\":{}}}",
+        shape.width, shape.height, shape.maximized
+    );
+    let _ = std::fs::write(shape_file(), text);
+}
 
 /// The game names its maps `world:<slug>` where the slug is the area itself, so the
 /// region has to come from the slug. Route numbers are unique across generations, so
@@ -473,10 +640,22 @@ wrap_browser_process_handler! {
                 Some(&mut view_delegate),
             );
 
+            let shape = read_shape();
+            let show_state = if shape.maximized {
+                ShowState::MAXIMIZED
+            } else {
+                ShowState::NORMAL
+            };
+
             let mut window_delegate = LauncherWindowDelegate::new(
                 RefCell::new(browser_view),
                 RuntimeStyle::DEFAULT,
-                ShowState::NORMAL,
+                show_state,
+                Size {
+                    width: shape.width,
+                    height: shape.height,
+                },
+                true,
             );
             window_create_top_level(Some(&mut window_delegate));
         }
@@ -488,11 +667,13 @@ wrap_window_delegate! {
         browser_view: RefCell<Option<BrowserView>>,
         runtime_style: RuntimeStyle,
         initial_show_state: ShowState,
+        size: Size,
+        persist: bool,
     }
 
     impl ViewDelegate {
         fn preferred_size(&self, _view: Option<&mut View>) -> Size {
-            Size { width: 1280, height: 800 }
+            self.size.clone()
         }
     }
 
@@ -504,6 +685,10 @@ wrap_window_delegate! {
             let (Some(window), Some(browser_view)) = (window, browser_view.as_ref()) else {
                 return;
             };
+            // The browser view has to follow every resize, so let the window lay it out
+            // as a fill. Without a layout the page keeps its old size inside a window
+            // that has grown, which is what fullscreen looked like.
+            window.set_to_fill_layout();
             let mut view = View::from(browser_view);
             window.add_child_view(Some(&mut view));
             let title = CefString::from(APP_NAME);
@@ -512,13 +697,59 @@ wrap_window_delegate! {
                 window.set_window_icon(Some(&mut icon));
                 window.set_window_app_icon(Some(&mut icon));
             }
+            // High priority so the game's own key handling cannot swallow them.
+            window.set_accelerator(CMD_FULLSCREEN, KEY_F11, 0, 0, 0, 1);
+            window.set_accelerator(CMD_RELOAD, KEY_F5, 0, 0, 0, 1);
             if self.initial_show_state != ShowState::HIDDEN {
                 window.show();
             }
         }
 
+        fn on_window_closing(&self, window: Option<&mut Window>) {
+            // Only the game's own window owns the saved shape; a stray popup must not
+            // overwrite it.
+            if let (true, Some(window)) = (self.persist, window) {
+                keep_shape(window);
+            }
+        }
+
         fn on_window_destroyed(&self, _window: Option<&mut Window>) {
             *self.browser_view.borrow_mut() = None;
+        }
+
+        fn on_accelerator(&self, window: Option<&mut Window>, command_id: i32) -> i32 {
+            let Some(window) = window else { return 0 };
+            match command_id {
+                CMD_FULLSCREEN => {
+                    let fullscreen = window.is_fullscreen() == 1;
+                    window.set_fullscreen((!fullscreen) as i32);
+                    1
+                }
+                CMD_RELOAD => {
+                    if let Some(browser_view) = self.browser_view.borrow().as_ref() {
+                        if let Some(browser) = browser_view.browser() {
+                            browser.reload();
+                        }
+                    }
+                    1
+                }
+                _ => 0,
+            }
+        }
+
+        // CEF's C++ defaults answer true here, but a Rust delegate that leaves these
+        // alone answers false, and a window that cannot be resized or maximised is
+        // exactly what that looks like.
+        fn can_resize(&self, _window: Option<&mut Window>) -> i32 {
+            1
+        }
+
+        fn can_maximize(&self, _window: Option<&mut Window>) -> i32 {
+            1
+        }
+
+        fn can_minimize(&self, _window: Option<&mut Window>) -> i32 {
+            1
         }
 
         fn can_close(&self, _window: Option<&mut Window>) -> i32 {
@@ -553,6 +784,11 @@ wrap_browser_view_delegate! {
                 RefCell::new(popup_browser_view.cloned()),
                 self.runtime_style,
                 ShowState::NORMAL,
+                Size {
+                    width: 1024,
+                    height: 768,
+                },
+                false,
             );
             window_create_top_level(Some(&mut window_delegate));
             1
@@ -572,12 +808,99 @@ wrap_client! {
             Some(LauncherLifeSpanHandler::new())
         }
 
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(LauncherRequestHandler::new())
+        }
+
         fn display_handler(&self) -> Option<DisplayHandler> {
             Some(LauncherDisplayHandler::new())
         }
 
         fn load_handler(&self) -> Option<LoadHandler> {
             Some(LauncherLoadHandler::new())
+        }
+    }
+}
+
+/// Bring the game back after its renderer died. Two deaths inside a minute mean the
+/// page is dying as it loads, so the second one lands on the offline page, whose own
+/// timer keeps trying, instead of spinning on a broken page.
+fn recover(browser: Option<&mut Browser>) {
+    let Some(browser) = browser else { return };
+    let Some(frame) = browser.main_frame() else {
+        return;
+    };
+
+    let now = now_ms();
+    let previous = LAST_RECOVERY_MS.swap(now, Ordering::Relaxed);
+    let looping = now.saturating_sub(previous) < CRASH_GAP_MS;
+    let target = if looping {
+        offline_url()
+    } else {
+        GAME_URL.to_string()
+    };
+    let url = CefString::from(target.as_str());
+    frame.load_url(Some(&url));
+}
+
+wrap_request_handler! {
+    struct LauncherRequestHandler {}
+
+    impl RequestHandler {
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _user_gesture: i32,
+            _is_redirect: i32,
+        ) -> i32 {
+            let (Some(frame), Some(request)) = (frame, request) else {
+                return 0;
+            };
+            // Only the window's own page is ours to police; sub-frames are the game's.
+            if frame.is_main() != 1 {
+                return 0;
+            }
+            let url = CefString::from(&request.url()).to_string();
+            if is_game_url(&url) || is_launcher_page(&url) {
+                return 0;
+            }
+            // Anything that is not a web page (about:blank while the view is created,
+            // data:, blob:) is the page's own business.
+            if !(url.starts_with("https://") || url.starts_with("http://") || url.starts_with("file://")) {
+                return 0;
+            }
+            open_external(&url);
+            1
+        }
+
+        fn on_open_urlfrom_tab(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            target_url: Option<&CefString>,
+            _target_disposition: WindowOpenDisposition,
+            _user_gesture: i32,
+        ) -> i32 {
+            let Some(url) = target_url else { return 0 };
+            let url = url.to_string();
+            open_external(&url);
+            1
+        }
+
+        fn on_render_process_terminated(
+            &self,
+            browser: Option<&mut Browser>,
+            _status: TerminationStatus,
+            _error_code: i32,
+            _error_string: Option<&CefString>,
+        ) {
+            // A renderer going away during shutdown is the window closing, not a crash.
+            if CLOSING.load(Ordering::Relaxed) {
+                return;
+            }
+            recover(browser);
         }
     }
 }
@@ -651,6 +974,32 @@ wrap_load_handler! {
             let script_url = CefString::from(GAME_URL);
             frame.execute_java_script(Some(&code), Some(&script_url), 0);
         }
+
+        fn on_load_error(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            error_code: Errorcode,
+            _error_text: Option<&CefString>,
+            failed_url: Option<&CefString>,
+        ) {
+            let Some(frame) = frame else { return };
+            if frame.is_main() != 1 {
+                return;
+            }
+            // -3 ERR_ABORTED means a newer load replaced this one, which is not a failure.
+            if error_code == Errorcode::ABORTED {
+                return;
+            }
+            let failed = failed_url.map(|url| url.to_string()).unwrap_or_default();
+            // The retry page asking for the game again is the retry page's business; it
+            // already has its own timer and reloading it here would only reset that.
+            if is_launcher_page(&failed) {
+                return;
+            }
+            let url = CefString::from(offline_url().as_str());
+            frame.load_url(Some(&url));
+        }
     }
 }
 
@@ -658,7 +1007,32 @@ wrap_life_span_handler! {
     struct LauncherLifeSpanHandler {}
 
     impl LifeSpanHandler {
+        fn on_before_popup(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _popup_id: i32,
+            target_url: Option<&CefString>,
+            _target_frame_name: Option<&CefString>,
+            _target_disposition: WindowOpenDisposition,
+            _user_gesture: i32,
+            _popup_features: Option<&PopupFeatures>,
+            _window_info: Option<&mut WindowInfo>,
+            _client: Option<&mut Option<Client>>,
+            _settings: Option<&mut BrowserSettings>,
+            _extra_info: Option<&mut Option<DictionaryValue>>,
+            _no_javascript_access: Option<&mut i32>,
+        ) -> i32 {
+            let Some(url) = target_url else { return 0 };
+            let url = url.to_string();
+            // One window is the whole point, so no popup is ever allowed; a link the
+            // page wanted in a new window goes to the player's browser instead.
+            open_external(&url);
+            1
+        }
+
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            CLOSING.store(true, Ordering::Relaxed);
             quit_message_loop();
         }
     }
