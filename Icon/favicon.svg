@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 104 104">
-  <!-- the tab icon: the Poké Ball in the logo, drawn as style.css .pokeball draws it (one unit = 1% of its width); favicon-32.png is this at 32 px (rsvg-convert), the app icons are this on the same navy (tools/app-icon.sh), and share.png, a link's preview (og:image), this at 340 px on the site's navy (magick -size 512x512 radial-gradient:'#2f5590'-'#1b2850', composited centre) -->
+  <!-- the tab icon: the Poké Ball in the logo, drawn as style.css .pokeball draws it (one unit = 1% of its width); favicon-1024.png is this at 1024 px (rsvg-convert), the Discord app icon, the app icons are this on the same navy (tools/app-icon.sh), and share.png, a link's preview (og:image), this at 340 px on the site's navy (magick -size 512x512 radial-gradient:'#2f5590'-'#1b2850', composited centre) -->
   <defs>
     <clipPath id="ball"><circle cx="50" cy="50" r="50"/></clipPath>
     <mask id="shade"><rect x="0" y="0" width="100" height="100" fill="#fff"/><circle cx="40" cy="40" r="50" fill="#000"/></mask>
