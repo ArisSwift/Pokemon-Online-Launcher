@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 104 104">
+  <!-- the tab icon: the Poké Ball in the logo, drawn as style.css .pokeball draws it (one unit = 1% of its width); favicon-32.png is this at 32 px (rsvg-convert), the app icons are this on the same navy (tools/app-icon.sh), and share.png, a link's preview (og:image), this at 340 px on the site's navy (magick -size 512x512 radial-gradient:'#2f5590'-'#1b2850', composited centre) -->
+  <defs>
+    <clipPath id="ball"><circle cx="50" cy="50" r="50"/></clipPath>
+    <mask id="shade"><rect x="0" y="0" width="100" height="100" fill="#fff"/><circle cx="40" cy="40" r="50" fill="#000"/></mask>
+  </defs>
+  <g clip-path="url(#ball)">
+    <rect x="0" y="0" width="100" height="43" fill="#ee3b2b"/>
+    <rect x="0" y="43" width="100" height="14" fill="#262626"/>
+    <rect x="0" y="57" width="100" height="43" fill="#f4f4f4"/>
+    <rect x="0" y="0" width="100" height="100" fill="#000" fill-opacity="0.14" mask="url(#shade)"/>
+    <circle cx="50" cy="50" r="19.5" fill="#262626"/>
+    <circle cx="50" cy="50" r="11.5" fill="#fafafa"/>
+    <circle cx="32" cy="24" r="7.6" fill="#fff" fill-opacity="0.75"/>
+    <circle cx="50" cy="50" r="46.5" fill="none" stroke="#262626" stroke-width="7"/>
+  </g>
+</svg>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pokem Online</title>
+<style>
+  @font-face { font-family: "PokeSolid"; src: url("fonts/Pokemon%20Solid.ttf"); }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #ee3b2b;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .lock { display: grid; justify-items: center; position: relative; padding: 9vmin; }
+
+  /* The ripple and the stroked wordmark paint outside their boxes; padding here and on
+     .word keeps that paint inside the composited layer, which otherwise crops it. */
+  .discwrap { position: relative; display: grid; place-items: center; }
+
+  .disc {
+    width: 30vmin;
+    height: 30vmin;
+    border-radius: 50%;
+    background: #fff;
+    display: grid;
+    place-items: center;
+    animation: discin 420ms cubic-bezier(.2,.8,.25,1) both;
+  }
+
+  .ball {
+    width: 86%;
+    height: 86%;
+    animation: settle 620ms cubic-bezier(.18,.89,.32,1.05) both;
+  }
+
+  .ripple {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 30vmin;
+    height: 30vmin;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.6);
+    opacity: 0;
+    animation: ripple 900ms ease-out 320ms both;
+  }
+
+  .word { margin-top: 3.2vmin; display: grid; padding: 1.4vmin 4vmin; animation: lift 480ms ease-out 150ms both; }
+  .word span {
+    grid-area: 1 / 1;
+    font-family: "PokeSolid";
+    font-size: 5vmin;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .word .blue { color: transparent; -webkit-text-stroke: .9vmin #2a75bb; }
+  .word .fill { color: #ffcb05; }
+
+  @keyframes discin {
+    from { opacity: 0; transform: scale(.86); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  @keyframes settle {
+    from { transform: rotate(-28deg) scale(.9); }
+    to   { transform: rotate(0deg) scale(1); }
+  }
+  @keyframes ripple {
+    0%   { opacity: 0; transform: scale(.9); }
+    25%  { opacity: .75; }
+    100% { opacity: 0; transform: scale(1.5); }
+  }
+  @keyframes lift {
+    from { opacity: 0; transform: translateY(7px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .disc, .ball, .word { animation: none; }
+    .ripple { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="lock">
+  <div class="discwrap">
+    <div class="ripple"></div>
+    <div class="disc">
+    <svg class="ball" viewBox="-2 -2 104 104" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <clipPath id="ball"><circle cx="50" cy="50" r="50"/></clipPath>
+        <mask id="shade"><rect x="0" y="0" width="100" height="100" fill="#fff"/><circle cx="40" cy="40" r="50" fill="#000"/></mask>
+      </defs>
+      <g clip-path="url(#ball)">
+        <rect x="0" y="0" width="100" height="43" fill="#ee3b2b"/>
+        <rect x="0" y="43" width="100" height="14" fill="#262626"/>
+        <rect x="0" y="57" width="100" height="43" fill="#f4f4f4"/>
+        <rect x="0" y="0" width="100" height="100" fill="#000" fill-opacity="0.14" mask="url(#shade)"/>
+        <circle cx="50" cy="50" r="19.5" fill="#262626"/>
+        <circle cx="50" cy="50" r="11.5" fill="#fafafa"/>
+        <circle cx="32" cy="24" r="7.6" fill="#fff" fill-opacity="0.75"/>
+        <circle cx="50" cy="50" r="46.5" fill="none" stroke="#262626" stroke-width="7"/>
+      </g>
+      </svg>
+    </div>
+  </div>
+  <div class="word">
+    <span class="blue">POKEM ONLINE</span>
+    <span class="fill">POKEM ONLINE</span>
+  </div>
+</div>
+<audio id="snd" src="splash.mp3" preload="auto"></audio>
+<script>
+  const game = "https://pokem.onl/";
+  const snd = document.getElementById("snd");
+  let left = false;
+  const go = () => { if (!left) { left = true; location.replace(game); } };
+  snd.addEventListener("ended", go);
+  snd.play().catch(() => setTimeout(go, 900));
+  setTimeout(go, 2200);
+</script>
+</body>
+</html>
