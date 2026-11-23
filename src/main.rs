@@ -341,7 +341,7 @@ impl Default for Shape {
     fn default() -> Self {
         Self {
             width: 1280,
-            height: 800,
+            height: 720,
             maximized: false,
         }
     }
@@ -628,6 +628,9 @@ wrap_browser_process_handler! {
             let mut client = self.client.borrow().clone();
             let mut settings = BrowserSettings::default();
             settings.background_color = 0xff_ee_3b_2b;
+            // The hover bubble in the corner is a browser affordance: the launcher is a
+            // window on the game, not a browser, and the game never needs it.
+            settings.chrome_status_bubble = State::DISABLED;
 
             let url = CefString::from(splash_url().as_str());
             let mut view_delegate = LauncherBrowserViewDelegate::new(RuntimeStyle::DEFAULT);
@@ -696,6 +699,10 @@ wrap_window_delegate! {
             if let Some(mut icon) = load_icon() {
                 window.set_window_icon(Some(&mut icon));
                 window.set_window_app_icon(Some(&mut icon));
+            }
+            if debug_echo() {
+                let bounds = window.bounds();
+                eprintln!("window {}x{}", bounds.width, bounds.height);
             }
             // High priority so the game's own key handling cannot swallow them.
             window.set_accelerator(CMD_FULLSCREEN, KEY_F11, 0, 0, 0, 1);
