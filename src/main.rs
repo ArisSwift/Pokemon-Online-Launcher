@@ -9,6 +9,13 @@ const APP_ID: &str = "1574411473172561931";
 const APP_NAME: &str = "Pokem Online";
 const GAME_URL: &str = "https://pokem.onl/";
 
+/// Chromium's own Linux agent with two tokens added. `pokem-online` says who we are, and
+/// `Electron/` is the token the site looks for to tell its desktop app from a browser tab:
+/// without it, the character screen carries an offer to download the official launcher
+/// (`bCe()` in the game bundle returns a platform for a plain browser agent and null for
+/// anything matching `/Electron\//i`).
+const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) pokem-online/0.1.0 Chrome/156.0.0.0 Electron/156.0.0 Safari/537.36";
+
 /// The renderer dying twice inside a minute means the page is dying as it loads, so the
 /// recovery goes by way of the offline page instead of spinning on a broken page.
 const CRASH_GAP_MS: u64 = 60_000;
@@ -274,9 +281,12 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
     let cache = cache_dir();
     clear_stale_singleton(&cache);
 
+    // POKEM_UA is only for testing what the site does with a different agent.
+    let user_agent = std::env::var("POKEM_UA").unwrap_or_else(|_| USER_AGENT.to_string());
     let settings = Settings {
         no_sandbox: 1,
         cache_path: CefString::from(cache.as_str()),
+        user_agent: CefString::from(user_agent.as_str()),
         ..Default::default()
     };
 
