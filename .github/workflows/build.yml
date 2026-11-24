@@ -116,6 +116,38 @@ jobs:
           cp -r assets "$app/Contents/assets"
           ditto -c -k --sequesterRsrc --keepParent "$app" ${{ matrix.artifact }}.zip
 
+      - name: Verify package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          tar tzf ${{ matrix.artifact }}.tar.gz > /tmp/files.txt
+          grep -q '/libcef.so$' /tmp/files.txt
+          grep -q '/locales/en-US.pak$' /tmp/files.txt
+          grep -q '/assets/splash/index.html$' /tmp/files.txt
+          echo "Linux package has the runtime and assets"
+
+      - name: Verify package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead("${{ matrix.artifact }}.zip")
+          $names = $zip.Entries | ForEach-Object { $_.FullName }
+          $zip.Dispose()
+          foreach ($needle in @("libcef.dll", "locales/en-US.pak", "assets/splash/index.html")) {
+            if (-not ($names -match [regex]::Escape($needle))) {
+              throw "missing $needle in the Windows package"
+            }
+          }
+          Write-Host "Windows package has the runtime and assets"
+
+      - name: Verify package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          unzip -l ${{ matrix.artifact }}.zip > /tmp/files.txt
+          grep -q 'Chromium Embedded Framework.framework/Chromium Embedded Framework$' /tmp/files.txt
+          grep -q 'Contents/assets/splash/index.html$' /tmp/files.txt
+          echo "macOS bundle has the framework and assets"
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
