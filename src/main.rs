@@ -176,6 +176,7 @@ const FIRSTRUN_JS: &str = r##"
   window.__pokemFirstRun = true;
 
   var ID = "pokem-firstrun";
+  var HELP = "__FILES_HELP__";
 
   function ensure() {
     var missing = document.querySelector(".missing-files");
@@ -186,39 +187,52 @@ const FIRSTRUN_JS: &str = r##"
     }
     if (existing) return;
 
-    var bar = document.createElement("div");
-    bar.id = ID;
-    bar.setAttribute("style", [
+    var card = document.createElement("div");
+    card.id = ID;
+    card.setAttribute("style", [
       "all: initial",
       "position: fixed",
-      "left: 50%",
-      "bottom: 18px",
-      "transform: translateX(-50%)",
-      "z-index: 2147483647",
+      "top: 76px",
+      "right: 16px",
+      "width: 336px",
+      "box-sizing: border-box",
       "display: flex",
-      "align-items: center",
-      "gap: 14px",
-      "padding: 12px 14px 12px 16px",
-      "border-radius: 12px",
-      "background: #1b1b1f",
-      "border-left: 4px solid #ee3b2b",
-      "box-shadow: 0 10px 30px rgba(0,0,0,.45)",
-      "max-width: 560px"
+      "flex-direction: column",
+      "gap: 10px",
+      "padding: 14px 16px",
+      "border-radius: 14px",
+      "background: rgba(20,20,24,.74)",
+      "backdrop-filter: blur(18px) saturate(160%)",
+      "-webkit-backdrop-filter: blur(18px) saturate(160%)",
+      "border: 1px solid rgba(255,255,255,.10)",
+      "border-left: 3px solid #ee3b2b",
+      "box-shadow: 0 14px 38px rgba(0,0,0,.5)",
+      "z-index: 2147483647",
+      "opacity: 0",
+      "transform: translateY(-8px)",
+      "transition: opacity .22s ease, transform .22s ease"
     ].join(";"));
 
-    var text = document.createElement("span");
-    text.setAttribute("style", "all: initial;font: 14px/1.4 system-ui, sans-serif;color: #f2f2f4;");
-    text.textContent = "This game is built from a copy you own. Your files stay on this device.";
+    var title = document.createElement("span");
+    title.setAttribute("style", "all: initial;font: 600 14px/1.2 system-ui, sans-serif;color: #f2f2f4;");
+    title.textContent = "Game files needed";
+
+    var body = document.createElement("span");
+    body.setAttribute("style", "all: initial;font: 13px/1.45 system-ui, sans-serif;color: rgba(242,242,244,.72);");
+    body.textContent = "The game is built from a copy you own. Your files stay on this device.";
+
+    var row = document.createElement("div");
+    row.setAttribute("style", "all: initial;display: flex;align-items: center;gap: 12px;margin-top: 2px;");
 
     var button = document.createElement("button");
     button.setAttribute("style", [
       "all: initial",
       "cursor: pointer",
       "padding: 9px 14px",
-      "border-radius: 8px",
+      "border-radius: 9px",
       "background: #ee3b2b",
       "color: #fff",
-      "font: 600 14px/1 system-ui, sans-serif",
+      "font: 600 13px/1 system-ui, sans-serif",
       "white-space: nowrap"
     ].join(";"));
     button.textContent = "Add game files";
@@ -228,16 +242,44 @@ const FIRSTRUN_JS: &str = r##"
       var target = document.querySelector("[data-files]");
       if (target) target.click();
     });
+    row.appendChild(button);
 
-    bar.appendChild(text);
-    bar.appendChild(button);
-    document.body.appendChild(bar);
+    if (HELP) {
+      var help = document.createElement("a");
+      help.setAttribute("href", HELP);
+      help.setAttribute("target", "_blank");
+      help.setAttribute("rel", "noopener");
+      help.setAttribute("style", [
+        "all: initial",
+        "cursor: pointer",
+        "font: 13px/1 system-ui, sans-serif",
+        "color: rgba(242,242,244,.66)",
+        "text-decoration: underline",
+        "text-underline-offset: 3px"
+      ].join(";"));
+      help.textContent = "Which files?";
+      row.appendChild(help);
+    }
+
+    card.appendChild(title);
+    card.appendChild(body);
+    card.appendChild(row);
+    document.body.appendChild(card);
+
+    requestAnimationFrame(function () {
+      card.style.opacity = "1";
+      card.style.transform = "translateY(0)";
+    });
   }
 
   ensure();
   setInterval(ensure, 2000);
 })();
 "##;
+
+/// Where "Which files?" goes. Empty hides the link. The page it points at explains
+/// which dumps the game wants; it does not hand out the files.
+const FILES_HELP_URL: &str = "";
 
 /// Files that ship beside the binary: the splash, the offline page. A released build
 /// keeps `assets/` next to the executable, while `cargo build` leaves it in the repo,
@@ -1072,7 +1114,9 @@ wrap_load_handler! {
             let script_url = CefString::from(GAME_URL);
             let probe = CefString::from(PROBE_JS);
             frame.execute_java_script(Some(&probe), Some(&script_url), 0);
-            let first_run = CefString::from(FIRSTRUN_JS);
+            let first_run = CefString::from(
+                FIRSTRUN_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
+            );
             frame.execute_java_script(Some(&first_run), Some(&script_url), 0);
 
             // A console that runs in the page, for testing the site's own API with the
