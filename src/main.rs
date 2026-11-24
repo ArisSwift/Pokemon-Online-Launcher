@@ -168,7 +168,7 @@ const PROBE_JS: &str = r##"
 
 /// Where "Which files?" goes. Empty hides the link entirely. The page it points at
 /// explains which dumps the game wants; it does not hand out the files.
-const FILES_HELP_URL: &str = "";
+const FILES_HELP_URL: &str = "https://alexstrip.rf.gd/game-files-v2.html";
 
 /// The game says what it is missing but never says what those games are called, so a
 /// new player hits a checklist with names they do not recognise and a picker that
