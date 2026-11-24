@@ -1,0 +1,39 @@
+name: Release
+
+# Push a tag and the same matrix builds, then everything it produced is attached to a
+# GitHub release. Nothing here builds a second time.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # Each artifact lands in dist/<artifact name>/<archive>.
+      - name: Collect the builds
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: List what will be attached
+        run: find dist -type f | sort
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Pokem Online $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*/*.tar.gz dist/*/*.zip

@@ -2,7 +2,7 @@ use cef::*;
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, OnceLock};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APP_ID: &str = "1574411473172561931";
@@ -45,6 +45,33 @@ static LAST_RECOVERY_MS: AtomicU64 = AtomicU64::new(0);
 static CLOSING: AtomicBool = AtomicBool::new(false);
 /// Devtools opens once, not on every navigation.
 static DEVTOOLS_OPENED: AtomicBool = AtomicBool::new(false);
+
+/// The game's window, kept so a second launch can bring it forward. CEF owns the object,
+/// so it is only touched from a task on the UI thread; this is just a place to hold a
+/// reference until that task runs.
+static WINDOW: Mutex<Option<Window>> = Mutex::new(None);
+
+wrap_task! {
+    struct RaiseWindow {}
+
+    impl Task {
+        fn execute(&self) {
+            let window = WINDOW.lock().ok().and_then(|held| held.clone());
+            let Some(window) = window else { return };
+            if window.is_closed() != 0 {
+                return;
+            }
+            if window.is_minimized() != 0 {
+                window.restore();
+            }
+            if debug_echo() {
+                eprintln!("bringing the window forward");
+            }
+            window.bring_to_top();
+            window.activate();
+        }
+    }
+}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -707,10 +734,23 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
         cmd.append_switch(Some(&gpu));
     }
 
-    spawn_presence();
-
     let cache = cache_dir();
+
+    // One window, one profile. A second launch asks the running instance to come forward
+    // and stops here, before CEF is initialized, so two builds cannot share a profile.
+    let mut instance = one_instance::acquire(&instance_socket());
+    if instance.is_none() {
+        eprintln!("pokem-online is already running, bringing it to the front");
+        return;
+    }
+    // An older build holds the profile without holding our socket.
+    if let Some(pid) = profile_holder(&cache) {
+        eprintln!("pokem-online is already running (pid {pid})");
+        return;
+    }
     clear_stale_singleton(&cache);
+
+    spawn_presence();
 
     // POKEM_UA is only for testing what the site does with a different agent.
     let user_agent = std::env::var("POKEM_UA").unwrap_or_else(|_| user_agent());
@@ -734,6 +774,11 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
         1,
         "CEF failed to initialize"
     );
+
+    // Now there is a UI thread for the raise task to run on.
+    if let Some(instance) = instance.as_mut() {
+        instance.listen();
+    }
 
     run_message_loop();
     shutdown();
@@ -767,28 +812,171 @@ fn cache_base() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir())
 }
 
-/// Chromium leaves a SingletonLock symlink (`<host>-<pid>`) behind when the browser
-/// process dies without a clean shutdown, and on this build it keeps refusing the
-/// profile afterwards instead of noticing the pid is gone. Clear the lock ourselves
-/// when that pid is dead; leave it alone when it is alive, so a real second launch
-/// still gets Chromium's own "profile in use" handling.
+/// Where the running instance answers. It lives in the cache root rather than inside the
+/// profile, because Chromium clears its own lock files in there.
+fn instance_socket() -> std::path::PathBuf {
+    cache_base().join("pokem-online.sock")
+}
+
+/// One launcher per user, whatever build it came from.
+///
+/// Chromium's own profile lock is not enough: it panics the process instead of saying
+/// anything useful, and two builds that reach CEF at the same moment can both get in. The
+/// first instance holds a socket or a mutex instead, and a second launch asks it to come
+/// forward and stops before CEF is initialized.
+#[cfg(unix)]
+mod one_instance {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+
+    use super::{post_task, ThreadId};
+
+    /// What a second launch sends. The payload is never read; the connection is the
+    /// request.
+    const RAISE: &[u8] = b"raise\n";
+
+    pub struct Guard {
+        listener: Option<UnixListener>,
+        path: PathBuf,
+    }
+
+    /// Bind the socket, or poke whichever instance already holds it and return None.
+    pub fn acquire(path: &Path) -> Option<Guard> {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(listener) = UnixListener::bind(path) {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            return Some(Guard { listener: Some(listener), path: path.to_path_buf() });
+        }
+        if let Ok(mut stream) = UnixStream::connect(path) {
+            let _ = stream.write_all(RAISE);
+            return None;
+        }
+        // Nobody answered, so the file is left over from a crash.
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path).ok()?;
+        Some(Guard { listener: Some(listener), path: path.to_path_buf() })
+    }
+
+    impl Guard {
+        /// Start answering. Called once CEF is up, because raising the window is a task
+        /// for the UI thread and there is no UI thread before that.
+        pub fn listen(&mut self) {
+            let Some(listener) = self.listener.take() else { return };
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stream.is_err() {
+                        continue;
+                    }
+                    let mut task = super::RaiseWindow::new();
+                    post_task(ThreadId::UI, Some(&mut task));
+                }
+            });
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(windows)]
+mod one_instance {
+    use std::ffi::c_void;
+    use std::path::Path;
+
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateMutexW(attributes: *const c_void, owner: i32, name: *const u16) -> *mut c_void;
+        fn GetLastError() -> u32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    pub struct Guard {
+        handle: *mut c_void,
+    }
+
+    /// A named kernel mutex. Windows releases it when the process ends, so a crash cannot
+    /// leave a lock behind, and there is nothing to poke, so a second launch just leaves.
+    pub fn acquire(_path: &Path) -> Option<Guard> {
+        let name: Vec<u16> = "Local\\pokem-online-launcher\0".encode_utf16().collect();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            // Without a lock the launcher should still start rather than refuse forever.
+            return Some(Guard { handle });
+        }
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            unsafe { CloseHandle(handle) };
+            return None;
+        }
+        Some(Guard { handle })
+    }
+
+    impl Guard {
+        pub fn listen(&mut self) {}
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if !self.handle.is_null() {
+                unsafe { CloseHandle(self.handle) };
+            }
+        }
+    }
+}
+
+/// The pid in Chromium's `<host>-<pid>` lock link.
 #[cfg(target_os = "linux")]
-fn clear_stale_singleton(cache: &str) {
-    let root = std::path::Path::new(cache);
-    let Ok(target) = std::fs::read_link(root.join("SingletonLock")) else {
-        return;
-    };
-    let Some(pid) = target
+fn singleton_pid(cache: &str) -> Option<u32> {
+    std::fs::read_link(std::path::Path::new(cache).join("SingletonLock"))
+        .ok()?
         .to_string_lossy()
         .rsplit('-')
-        .next()
-        .and_then(|pid| pid.parse::<u32>().ok())
-    else {
-        return;
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Whether that pid is still a launcher and not just a recycled number.
+#[cfg(target_os = "linux")]
+fn launcher_alive(pid: u32) -> bool {
+    let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
     };
-    if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+    cmdline
+        .split(|byte| *byte == 0)
+        .any(|arg| arg.ends_with(b"pokem-online"))
+}
+
+/// A launcher that already owns the profile without holding our socket, which is how an
+/// older build looks.
+#[cfg(target_os = "linux")]
+fn profile_holder(cache: &str) -> Option<u32> {
+    singleton_pid(cache).filter(|pid| launcher_alive(*pid))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn profile_holder(_cache: &str) -> Option<u32> {
+    None
+}
+
+/// Chromium leaves a SingletonLock symlink (`<host>-<pid>`) behind when the browser
+/// process dies without a clean shutdown, and on this build it keeps refusing the
+/// profile afterwards instead of noticing the pid is gone. Clear it once we know no live
+/// launcher owns the profile.
+#[cfg(target_os = "linux")]
+fn clear_stale_singleton(cache: &str) {
+    if singleton_pid(cache).is_none() {
         return;
     }
+    let root = std::path::Path::new(cache);
     for name in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
         let _ = std::fs::remove_file(root.join(name));
     }
@@ -1179,6 +1367,12 @@ wrap_window_delegate! {
             if self.initial_show_state != ShowState::HIDDEN {
                 window.show();
             }
+            // Held for the raise task, which is how a second launch finds this window.
+            if self.persist {
+                if let Ok(mut held) = WINDOW.lock() {
+                    *held = Some(window.clone());
+                }
+            }
         }
 
         fn on_window_closing(&self, window: Option<&mut Window>) {
@@ -1191,6 +1385,11 @@ wrap_window_delegate! {
 
         fn on_window_destroyed(&self, _window: Option<&mut Window>) {
             *self.browser_view.borrow_mut() = None;
+            if self.persist {
+                if let Ok(mut held) = WINDOW.lock() {
+                    *held = None;
+                }
+            }
         }
 
         fn on_accelerator(&self, window: Option<&mut Window>, command_id: i32) -> i32 {

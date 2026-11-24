@@ -9,6 +9,7 @@ I built it for myself. It works, so it is here.
 ## What it does
 
 - Opens pokem.onl in its own window, without browser chrome.
+- Runs one copy at a time. Launching it again brings the open window forward instead of starting a second one.
 - Remembers the window shape between launches.
 - Shows your trainer, place and region on Discord while you play.
 - Explains which game files the site wants when its first screen asks for them.
@@ -20,7 +21,7 @@ It does not include any games. pokem.onl builds its world from copies you own, a
 
 ## Download
 
-Each GitHub Actions run attaches a build for Linux, Windows and macOS. Grab the archive for your system, unpack it, and run `pokem-online`. On macOS, open `Pokem Online.app`.
+Tagged versions are on the [releases page](https://github.com/ArisSwift/Pokemon-Online-Launcher/releases), and the builds are attached to each one. Grab the archive for your system, unpack it, and run `pokem-online`. On macOS, open `Pokem Online.app`.
 
 I have only run this on Linux. The Windows and macOS builds compile in CI, but nobody has played them yet. If one breaks, open an issue and tell me what happened.
 
@@ -70,8 +71,14 @@ The window is CEF Views, no UI toolkit. A local splash loads first, then swaps t
 
 Discord presence comes from the page itself. The launcher reads the game's HUD and its own presence socket, so the card mirrors what the game knows instead of guessing from the URL.
 
+## License
+
+MIT. Take it, fork it, put it in a package, as long as the copyright line comes along.
+
+That covers the Rust code. The Pokemon fonts, the splash sound and the artwork in `assets/` and `Icon/` are not mine to license. They are there because the first screen needs them, and they stay with their owners.
+
 ## Credits
 
-pokem.onl is made by [Mitchell Winn](https://mitchart.net). This is a third-party launcher, not part of the game. The game, its name and its art belong to their owners, and this repo only contains the launcher code and the splash it opens with.
+pokem.onl is made by [Mitchell Winn](https://mitchart.net). This is a third-party launcher, not part of the game.
 
 The Discord invite for the game is [here](https://discord.gg/DAkeDwkvSA) if you want to talk to the people who actually build it.
