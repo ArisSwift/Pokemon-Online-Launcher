@@ -60,10 +60,10 @@ On Linux, the same release binary can go into an AppImage:
 
 ```sh
 cargo build --release
-./packaging/appimage/build.sh
+APPIMAGETOOL=/path/to/appimagetool ./packaging/appimage/build.sh
 ```
 
-That writes `dist/pokem-online-x86_64.AppImage`. It runs without Chromium's setuid sandbox, because an AppImage mount is nosuid.
+That writes `dist/pokem-online-x86_64.AppImage`. It runs without Chromium's setuid sandbox, because an AppImage mount is nosuid. If `appimagetool` is already on your PATH you can leave the variable off. The release page carries one built by CI, so you only need this if you changed the code.
 
 ## How it fits together
 

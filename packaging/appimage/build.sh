@@ -15,7 +15,14 @@ profile="${PROFILE:-release}"
 name="pokem-online"
 out="${1:-$root/dist}"
 appdir="$out/Pokem Online.AppDir"
-tool="${APPIMAGETOOL:-/mnt/arizen/Github/appimagetool}"
+
+# The tool is not something a distro installs, so it is either pointed at or on PATH.
+tool="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
+if [ -z "$tool" ]; then
+  echo "appimagetool not found. Download it from github.com/AppImage/appimagetool" >&2
+  echo "and run: APPIMAGETOOL=/path/to/appimagetool $0" >&2
+  exit 1
+fi
 
 bin="$root/target/$profile/$name"
 if [ ! -x "$bin" ]; then
@@ -59,4 +66,9 @@ cp packaging/appimage/pokem-online.desktop "$appdir/"
 cp packaging/appimage/pokem-online.desktop "$appdir/usr/share/applications/"
 
 ARCH=x86_64 "$tool" --no-appstream "$appdir" "$out/$name-x86_64.AppImage"
-echo "wrote $out/$name-x86_64.AppImage"
+image="$out/$name-x86_64.AppImage"
+if [ ! -s "$image" ]; then
+  echo "appimagetool did not write $image" >&2
+  exit 1
+fi
+echo "wrote $image"
