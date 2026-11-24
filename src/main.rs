@@ -166,120 +166,69 @@ const PROBE_JS: &str = r##"
 })();
 "##;
 
-/// The first run, in our own words. The game already has a proper files gate, so this
-/// does not explain anything twice: it only makes the first visit obvious, and its
-/// button clicks the game's own "Add game files" so the picker still opens from a real
-/// gesture. It removes itself once files are added.
-const FIRSTRUN_JS: &str = r##"
-(function () {
-  if (window.__pokemFirstRun) return;
-  window.__pokemFirstRun = true;
+/// Where "Which files?" goes. Empty hides the link entirely. The page it points at
+/// explains which dumps the game wants; it does not hand out the files.
+const FILES_HELP_URL: &str = "";
 
-  var ID = "pokem-firstrun";
+/// The game says what it is missing but never says what those games are called, so a
+/// new player hits a checklist with names they do not recognise and a picker that
+/// cannot tell them what it wants. This adds one link to the two places the game says
+/// files are missing: the first run gate, and the character screen when they are gone.
+///
+/// It is deliberately small. The gate already explains the rest, and a second panel
+/// repeating it would be noise on someone else's layout.
+const FILES_HELP_JS: &str = r##"
+(function () {
+  if (window.__pokemFilesHelp) return;
+  window.__pokemFilesHelp = true;
+
   var HELP = "__FILES_HELP__";
 
+  function makeLink(text, style) {
+    var a = document.createElement("a");
+    a.setAttribute("href", HELP);
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noopener");
+    a.setAttribute("data-pokem-help", "1");
+    a.setAttribute("style", style);
+    a.textContent = text;
+    return a;
+  }
+
   function ensure() {
+    if (!HELP) return;
+
+    // First run: the full files gate.
+    var gate = document.getElementById("gate");
+    var actions = gate && gate.querySelector(".actions");
+    if (actions && actions.isConnected && !gate.querySelector("[data-pokem-help]")) {
+      var row = document.createElement("div");
+      row.setAttribute("style", "all: initial;display:block;margin-top:14px;text-align:center;");
+      row.appendChild(makeLink(
+        "Which files do I need?",
+        "all: initial;font: 13px/1 system-ui, sans-serif;color: rgba(255,255,255,.58);" +
+        "text-decoration: underline;text-underline-offset: 3px;cursor: pointer;"
+      ));
+      actions.insertAdjacentElement("afterend", row);
+    }
+
+    // A character that already exists, with its files removed since.
     var missing = document.querySelector(".missing-files");
-    var existing = document.getElementById(ID);
-    if (!missing) {
-      if (existing) existing.remove();
-      return;
+    if (missing && !missing.querySelector("[data-pokem-help]")) {
+      var link = makeLink(
+        "Which files do I need?",
+        "all: initial;margin-left:14px;font: 13px/1 system-ui, sans-serif;" +
+        "color: rgba(255,255,255,.58);text-decoration: underline;" +
+        "text-underline-offset: 3px;cursor: pointer;"
+      );
+      missing.appendChild(link);
     }
-    if (existing) return;
-
-    var card = document.createElement("div");
-    card.id = ID;
-    card.setAttribute("style", [
-      "all: initial",
-      "position: fixed",
-      "top: 76px",
-      "right: 16px",
-      "width: 336px",
-      "box-sizing: border-box",
-      "display: flex",
-      "flex-direction: column",
-      "gap: 10px",
-      "padding: 14px 16px",
-      "border-radius: 14px",
-      "background: rgba(20,20,24,.74)",
-      "backdrop-filter: blur(18px) saturate(160%)",
-      "-webkit-backdrop-filter: blur(18px) saturate(160%)",
-      "border: 1px solid rgba(255,255,255,.10)",
-      "border-left: 3px solid #ee3b2b",
-      "box-shadow: 0 14px 38px rgba(0,0,0,.5)",
-      "z-index: 2147483647",
-      "opacity: 0",
-      "transform: translateY(-8px)",
-      "transition: opacity .22s ease, transform .22s ease"
-    ].join(";"));
-
-    var title = document.createElement("span");
-    title.setAttribute("style", "all: initial;font: 600 14px/1.2 system-ui, sans-serif;color: #f2f2f4;");
-    title.textContent = "Game files needed";
-
-    var body = document.createElement("span");
-    body.setAttribute("style", "all: initial;font: 13px/1.45 system-ui, sans-serif;color: rgba(242,242,244,.72);");
-    body.textContent = "The game is built from a copy you own. Your files stay on this device.";
-
-    var row = document.createElement("div");
-    row.setAttribute("style", "all: initial;display: flex;align-items: center;gap: 12px;margin-top: 2px;");
-
-    var button = document.createElement("button");
-    button.setAttribute("style", [
-      "all: initial",
-      "cursor: pointer",
-      "padding: 9px 14px",
-      "border-radius: 9px",
-      "background: #ee3b2b",
-      "color: #fff",
-      "font: 600 13px/1 system-ui, sans-serif",
-      "white-space: nowrap"
-    ].join(";"));
-    button.textContent = "Add game files";
-    button.addEventListener("click", function (event) {
-      event.preventDefault();
-      event.stopPropagation();
-      var target = document.querySelector("[data-files]");
-      if (target) target.click();
-    });
-    row.appendChild(button);
-
-    if (HELP) {
-      var help = document.createElement("a");
-      help.setAttribute("href", HELP);
-      help.setAttribute("target", "_blank");
-      help.setAttribute("rel", "noopener");
-      help.setAttribute("style", [
-        "all: initial",
-        "cursor: pointer",
-        "font: 13px/1 system-ui, sans-serif",
-        "color: rgba(242,242,244,.66)",
-        "text-decoration: underline",
-        "text-underline-offset: 3px"
-      ].join(";"));
-      help.textContent = "Which files?";
-      row.appendChild(help);
-    }
-
-    card.appendChild(title);
-    card.appendChild(body);
-    card.appendChild(row);
-    document.body.appendChild(card);
-
-    requestAnimationFrame(function () {
-      card.style.opacity = "1";
-      card.style.transform = "translateY(0)";
-    });
   }
 
   ensure();
   setInterval(ensure, 2000);
 })();
 "##;
-
-/// Where "Which files?" goes. Empty hides the link. The page it points at explains
-/// which dumps the game wants; it does not hand out the files.
-const FILES_HELP_URL: &str = "";
 
 /// Files that ship beside the binary: the splash, the offline page. A released build
 /// keeps `assets/` next to the executable, while `cargo build` leaves it in the repo,
@@ -1114,10 +1063,10 @@ wrap_load_handler! {
             let script_url = CefString::from(GAME_URL);
             let probe = CefString::from(PROBE_JS);
             frame.execute_java_script(Some(&probe), Some(&script_url), 0);
-            let first_run = CefString::from(
-                FIRSTRUN_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
+            let files_help = CefString::from(
+                FILES_HELP_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
             );
-            frame.execute_java_script(Some(&first_run), Some(&script_url), 0);
+            frame.execute_java_script(Some(&files_help), Some(&script_url), 0);
 
             // A console that runs in the page, for testing the site's own API with the
             // session the page already has. Devtools is a second window, so it exists only
