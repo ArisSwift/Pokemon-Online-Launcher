@@ -63,14 +63,24 @@ jobs:
           mkdir -p "$pkg"
           cp target/release/pokem-online "$pkg/"
           cp -r assets "$pkg/"
-          cp target/release/*.so "$pkg/" || true
-          cp target/release/*.so.* "$pkg/" || true
-          cp target/release/*.pak "$pkg/" || true
-          cp target/release/*.dat "$pkg/" || true
-          cp target/release/*.bin "$pkg/" || true
-          cp target/release/*.json "$pkg/" || true
-          cp target/release/chrome-sandbox "$pkg/"
-          cp -r target/release/locales "$pkg/"
+
+          # The runtime lives in the CEF directory cef-dll-sys resolved, which is
+          # not always next to the binary. Copy from there and fail loudly if it
+          # cannot be found.
+          cef_so="$(find target/release/build -name libcef.so -print -quit)"
+          if [ -z "$cef_so" ]; then
+            echo "CEF runtime not found. target/release contains:" >&2
+            ls -la target/release >&2
+            find target/release/build -maxdepth 2 -type d >&2
+            exit 1
+          fi
+          cef_dir="$(dirname "$cef_so")"
+          echo "CEF runtime: $cef_dir"
+          cp "$cef_dir"/*.so "$pkg/" || true
+          cp "$cef_dir"/*.so.* "$pkg/" || true
+          cp "$cef_dir"/*.pak "$cef_dir"/*.dat "$cef_dir"/*.bin "$cef_dir"/*.json "$pkg/" || true
+          cp "$cef_dir/chrome-sandbox" "$pkg/"
+          cp -r "$cef_dir/locales" "$pkg/"
           tar -C dist -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Package (Windows)
@@ -81,12 +91,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path $pkg | Out-Null
           Copy-Item target/release/pokem-online.exe $pkg
           Copy-Item -Recurse assets $pkg
-          Copy-Item target/release/*.dll $pkg -ErrorAction SilentlyContinue
-          Copy-Item target/release/*.pak $pkg -ErrorAction SilentlyContinue
-          Copy-Item target/release/*.dat $pkg -ErrorAction SilentlyContinue
-          Copy-Item target/release/*.bin $pkg -ErrorAction SilentlyContinue
-          Copy-Item target/release/*.json $pkg -ErrorAction SilentlyContinue
-          Copy-Item -Recurse target/release/locales $pkg
+
+          $cef = Get-ChildItem -Path target/release/build -Recurse -Filter libcef.dll |
+            Select-Object -First 1
+          if (-not $cef) { throw "CEF runtime not found under target/release/build" }
+          $src = $cef.Directory.FullName
+          Write-Host "CEF runtime: $src"
+          Copy-Item "$src/*.dll" $pkg
+          Copy-Item "$src/*.pak" $pkg
+          Copy-Item "$src/*.dat" $pkg
+          Copy-Item "$src/*.bin" $pkg
+          Copy-Item "$src/*.json" $pkg
+          Copy-Item -Recurse "$src/locales" $pkg
+          Copy-Item -Recurse "$src/swiftshader" $pkg -ErrorAction SilentlyContinue
           Compress-Archive -Path $pkg -DestinationPath "${{ matrix.artifact }}.zip"
 
       # A bare Mach-O cannot find the framework, so wrap it in an app bundle.
