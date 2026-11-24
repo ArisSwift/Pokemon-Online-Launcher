@@ -85,6 +85,23 @@ jobs:
           cp -r "$cef_dir/locales" "$pkg/"
           tar -C dist -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
+      # The AppImage is the format most Linux players want, so it is built here too and
+      # released without anyone having to upload 148 MB from their own machine.
+      - name: Package (Linux AppImage)
+        if: runner.os == 'Linux'
+        env:
+          # appimagetool is itself an AppImage, and a runner has no FUSE.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -eu
+          tool="$RUNNER_TEMP/appimagetool"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            -o "$tool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$tool"
+          APPIMAGETOOL="$tool" ./packaging/appimage/build.sh dist
+          ls -lh dist/*.AppImage
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -127,6 +144,21 @@ jobs:
           grep -q '/assets/splash/index.html$' /tmp/files.txt
           echo "Linux package has the runtime and assets"
 
+      # Extracting needs no FUSE, and it proves the mount really holds the runtime
+      # rather than a binary that would die on the player's machine.
+      - name: Verify the AppImage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          img=dist/pokem-online-x86_64.AppImage
+          test -x "$img"
+          for path in usr/bin/libcef.so usr/bin/assets/splash/index.html pokem-online.desktop; do
+            "$img" --appimage-extract "$path" > /dev/null
+            test -s "squashfs-root/$path"
+            echo "AppImage has $path"
+          done
+          rm -rf squashfs-root
+
       - name: Verify package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -157,4 +189,5 @@ jobs:
           path: |
             ${{ matrix.artifact }}.zip
             ${{ matrix.artifact }}.tar.gz
+            dist/*.AppImage
           if-no-files-found: error

@@ -6,6 +6,14 @@ on:
   push:
     tags:
       - "v*"
+  # Publishing an existing tag again is how a release picks up an asset that a later
+  # change to the build added, without inventing a version number for it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and publish
+        required: true
+        default: v0.1.0
 
 permissions:
   contents: write
@@ -17,6 +25,8 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       # Each artifact lands in dist/<artifact name>/<archive>.
       - name: Collect the builds
@@ -27,13 +37,19 @@ jobs:
       - name: List what will be attached
         run: find dist -type f | sort
 
-      - name: Create the release
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Pokem Online $GITHUB_REF_NAME" \
-            --generate-notes \
-            dist/*/*.tar.gz dist/*/*.zip
+          echo "publishing $TAG"
+          assets="dist/*/*.tar.gz dist/*/*.zip dist/*/*.AppImage"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" $assets --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Pokem Online $TAG" \
+              --generate-notes \
+              $assets
+          fi
