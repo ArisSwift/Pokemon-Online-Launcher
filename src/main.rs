@@ -170,58 +170,329 @@ const PROBE_JS: &str = r##"
 /// explains which dumps the game wants; it does not hand out the files.
 const FILES_HELP_URL: &str = "https://alexstrip.rf.gd/game-files-v2.html";
 
-/// The game says what it is missing but never says what those games are called, so a
-/// new player hits a checklist with names they do not recognise and a picker that
-/// cannot tell them what it wants. This adds one link to the two places the game says
-/// files are missing: the first run gate, and the character screen when they are gone.
+/// The game says what it is missing but never says what those games are called, so a new
+/// player meets a checklist of names they do not recognise and a picker that cannot tell
+/// them what it wants. This adds one glass pill to the two places the game says files are
+/// missing. The pill is an icon that opens its label on hover, and clicking it opens a
+/// panel inside the window.
 ///
-/// It is deliberately small. The gate already explains the rest, and a second panel
-/// repeating it would be noise on someone else's layout.
+/// The panel is ours rather than a page in a browser: it works offline, it cannot 404,
+/// and it says the short version. The full page is one button away inside it for anyone
+/// who wants the copying tools.
 const FILES_HELP_JS: &str = r##"
 (function () {
   if (window.__pokemFilesHelp) return;
   window.__pokemFilesHelp = true;
 
   var HELP = "__FILES_HELP__";
+  var PANEL = "pokem-files-panel";
+  var STYLE = "pokem-files-style";
 
-  function makeLink(text, style) {
+  var TRIGGER_CSS = [
+    "a[data-pokem-help].pkh-trigger{all:initial;box-sizing:border-box;display:inline-flex;",
+    "align-items:center;height:34px;padding:0 8px;border-radius:999px;cursor:pointer;",
+    "background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.14);",
+    "backdrop-filter:blur(14px) saturate(150%);-webkit-backdrop-filter:blur(14px) saturate(150%);",
+    "box-shadow:0 6px 18px rgba(0,0,0,.18),inset 0 1px 0 rgba(255,255,255,.08);",
+    "color:#dfe6f4;text-decoration:none;vertical-align:middle;-webkit-tap-highlight-color:transparent;",
+    "cursor:pointer;-webkit-user-select:none;user-select:none;",
+    "transition:background .18s ease,border-color .18s ease,box-shadow .18s ease;}",
+    "a[data-pokem-help].pkh-trigger:hover{background:rgba(255,255,255,.10);",
+    "border-color:rgba(255,203,5,.42);",
+    "box-shadow:0 8px 24px rgba(0,0,0,.26),inset 0 1px 0 rgba(255,255,255,.12);}",
+    "a[data-pokem-help].pkh-trigger:focus-visible{outline:none;",
+    "box-shadow:0 0 0 3px rgba(255,203,5,.28),0 8px 24px rgba(0,0,0,.26);}",
+    "a[data-pokem-help].pkh-trigger .pkh-ico{all:initial;display:block;width:18px;height:18px;",
+    "flex:none;color:#ffcb05;cursor:pointer;-webkit-user-select:none;user-select:none;",
+    "transition:color .18s ease,transform .18s ease;}",
+    "a[data-pokem-help].pkh-trigger:hover .pkh-ico,",
+    "a[data-pokem-help].pkh-trigger:focus-visible .pkh-ico{color:#ffd83d;transform:scale(1.06);}",
+    "a[data-pokem-help].pkh-trigger .pkh-label{all:initial;display:block;",
+    "font:600 12.5px/1 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;",
+    "color:#e6ecf9;white-space:nowrap;overflow:hidden;max-width:0;opacity:0;margin-left:0;",
+    "cursor:pointer;-webkit-user-select:none;user-select:none;",
+    "transition:max-width .3s cubic-bezier(.2,.8,.3,1),opacity .18s ease,",
+    "margin-left .3s cubic-bezier(.2,.8,.3,1);}",
+    "a[data-pokem-help].pkh-trigger:hover .pkh-label,",
+    "a[data-pokem-help].pkh-trigger:focus-visible .pkh-label{max-width:min(240px,58vw);",
+    "opacity:1;margin-left:8px;}",
+    "@media (hover:none){a[data-pokem-help].pkh-trigger .pkh-label{",
+    "max-width:min(240px,58vw);opacity:1;margin-left:8px;}}",
+    "@media (prefers-reduced-motion:reduce){",
+    "a[data-pokem-help].pkh-trigger,a[data-pokem-help].pkh-trigger *{transition:none;}}"
+  ].join("");
+
+  var PANEL_CSS = [
+    "#" + PANEL + "{all:initial;position:fixed;inset:0;z-index:2147483647;display:flex;",
+    "align-items:center;justify-content:center;padding:24px;",
+    "background:rgba(4,7,14,.62);backdrop-filter:blur(8px);",
+    "-webkit-backdrop-filter:blur(8px);color-scheme:dark;}",
+    "#" + PANEL + " *{all:initial;box-sizing:border-box;",
+    "font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}",
+    "#" + PANEL + " .pkh-card{display:flex;flex-direction:column;width:min(600px,100%);",
+    "max-height:90vh;border-radius:18px;border:1px solid rgba(255,255,255,.16);",
+    "background:linear-gradient(180deg,rgba(34,41,60,.88),rgba(13,17,27,.95));",
+    "backdrop-filter:blur(22px) saturate(140%);",
+    "-webkit-backdrop-filter:blur(22px) saturate(140%);",
+    "box-shadow:0 30px 80px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.10);",
+    "overflow:hidden;}",
+    "#" + PANEL + " .pkh-head{display:flex;align-items:flex-start;gap:12px;",
+    "padding:16px 18px 10px;}",
+    "#" + PANEL + " .pkh-title{display:block;font:700 17px/1.25 system-ui,sans-serif;",
+    "color:#f4f6fa;flex:1;letter-spacing:.01em;}",
+    "#" + PANEL + " .pkh-x{display:flex;align-items:center;justify-content:center;",
+    "cursor:pointer;width:26px;height:26px;padding:0;flex:none;align-self:flex-start;",
+    "border-radius:8px;border:1px solid rgba(255,255,255,.12);",
+    "background:rgba(255,255,255,.05);color:#c9d2e2;",
+    "font:600 15px/1 system-ui,sans-serif;}",
+    "#" + PANEL + " .pkh-x:hover{background:rgba(255,255,255,.12);}",
+    "#" + PANEL + " .pkh-body{display:block;padding:0 18px 8px;overflow-y:auto;",
+    "scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.16) transparent;}",
+    "#" + PANEL + " .pkh-body::-webkit-scrollbar{width:9px;}",
+    "#" + PANEL + " .pkh-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);",
+    "border-radius:9px;}",
+    "#" + PANEL + " .pkh-body::-webkit-scrollbar-track{background:transparent;}",
+    "#" + PANEL + " .pkh-h{display:block;font:700 10.5px/1 system-ui,sans-serif;",
+    "letter-spacing:.11em;text-transform:uppercase;color:rgba(255,203,5,.82);",
+    "margin:14px 0 5px;}",
+    "#" + PANEL + " .pkh-body > .pkh-h:first-child{margin-top:0;}",
+    "#" + PANEL + " .pkh-row{display:flex;align-items:baseline;gap:10px;",
+    "padding:6px 0;border-top:1px solid rgba(255,255,255,.07);}",
+    "#" + PANEL + " .pkh-name{display:block;font:600 13.5px/1.35 system-ui,sans-serif;",
+    "color:#eef1f7;flex:none;max-width:56%;}",
+    "#" + PANEL + " .pkh-why{display:block;font:12.5px/1.4 system-ui,sans-serif;",
+    "color:#8f9ab1;flex:1;text-align:right;}",
+    "#" + PANEL + " .pkh-chip{display:inline-block;padding:1px 7px;border-radius:999px;",
+    "border:1px solid rgba(255,255,255,.12);font:600 10px/16px system-ui,sans-serif;",
+    "letter-spacing:.06em;color:#aab6cc;margin-left:7px;vertical-align:1px;}",
+    "#" + PANEL + " .pkh-no{display:block;font:12px/1.55 system-ui,sans-serif;",
+    "color:#8f9ab1;margin:0 0 2px;}",
+    "#" + PANEL + " .pkh-no b{display:inline;font-weight:600;color:#ffd05a;}",
+    "#" + PANEL + " .pkh-opt{display:block;font:12.5px/1.45 system-ui,sans-serif;",
+    "color:#9aa5ba;margin:2px 0 0;}",
+    "#" + PANEL + " .pkh-tip{display:block;font:12px/1.5 system-ui,sans-serif;",
+    "color:#8c97ad;margin:8px 0 2px;padding-top:8px;",
+    "border-top:1px solid rgba(255,255,255,.07);}",
+    "#" + PANEL + " .pkh-foot{display:flex;align-items:center;gap:10px;",
+    "padding:13px 18px 15px;border-top:1px solid rgba(255,255,255,.08);",
+    "background:rgba(255,255,255,.02);}",
+    "#" + PANEL + " .pkh-btn{display:block;cursor:pointer;border-radius:9px;",
+    "padding:10px 15px;font:600 13px/1 system-ui,sans-serif;border:1px solid transparent;",
+    "transition:background .15s ease,border-color .15s ease;}",
+    "#" + PANEL + " .pkh-btn:focus-visible{outline:3px solid rgba(255,203,5,.35);",
+    "outline-offset:2px;}",
+    "#" + PANEL + " .pkh-go{background:#ffcb05;color:#1b1600;flex:1;text-align:center;",
+    "box-shadow:0 4px 14px rgba(255,203,5,.18);}",
+    "#" + PANEL + " .pkh-go:hover{background:#ffd83d;}",
+    "#" + PANEL + " .pkh-go:active{background:#eebd00;}",
+    "#" + PANEL + " .pkh-close{background:rgba(255,255,255,.06);",
+    "border-color:rgba(255,255,255,.12);color:#cfd8e8;}",
+    "#" + PANEL + " .pkh-close:hover{background:rgba(255,255,255,.12);}",
+    "#" + PANEL + " .pkh-src{display:block;font:11px/1.4 system-ui,sans-serif;",
+    "color:#5f6a80;padding:0 18px 12px;}",
+    "@media (prefers-reduced-motion:reduce){#" + PANEL + " .pkh-btn{transition:none;}}"
+  ].join("");
+
+  var REQUIRED = [
+    ["HeartGold or SoulSilver", "DS", "Johto and Kanto, with their towns and music"],
+    ["Platinum, Diamond or Pearl", "DS", "Sinnoh, with its extra buildings"],
+    ["Black, White, Black 2 or White 2", "DS", "Every Pokémon's picture, plus the Gen 5 moves and cries"],
+    ["Ranger: Guardian Signs", "DS", "Your trainer and the riding poses"],
+    ["Emerald", "GBA", "Move animations, cries, Hoenn music and the battle simulator"]
+  ];
+
+  var WRONG = [
+    ["FireRed, LeafGreen, Ruby or Sapphire", "use Emerald instead"],
+    ["Gold, Silver or Crystal", "use HeartGold or SoulSilver instead"],
+    ["Ranger or Shadows of Almia", "use Guardian Signs instead"],
+    ["Explorers of Time or Darkness", "use Sky instead"],
+    ["Pokémon XD", "not used at all"]
+  ];
+
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text) node.textContent = text;
+    return node;
+  }
+
+  function svgEl(tag, attrs) {
+    var node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attrs).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    return node;
+  }
+
+  function questionIcon() {
+    var svg = svgEl("svg", {
+      "class": "pkh-ico", viewBox: "0 0 24 24",
+      "aria-hidden": "true", focusable: "false"
+    });
+    svg.appendChild(svgEl("circle", {
+      cx: "12", cy: "12", r: "9.1", fill: "none",
+      stroke: "currentColor", "stroke-width": "1.5"
+    }));
+    svg.appendChild(svgEl("path", {
+      d: "M9.2 9.15a2.95 2.95 0 1 1 4.55 2.6c-.95.58-1.75 1.16-1.75 2.45",
+      fill: "none", stroke: "currentColor", "stroke-width": "1.7",
+      "stroke-linecap": "round", "stroke-linejoin": "round"
+    }));
+    svg.appendChild(svgEl("circle", {
+      cx: "12", cy: "17.35", r: "1.15", fill: "currentColor"
+    }));
+    return svg;
+  }
+
+  function row(name, sys, why) {
+    var r = el("div", "pkh-row");
+    var n = el("span", "pkh-name", name);
+    if (sys) n.appendChild(el("span", "pkh-chip", sys));
+    r.appendChild(n);
+    r.appendChild(el("span", "pkh-why", why));
+    return r;
+  }
+
+  function build(onShut) {
+    var back = el("div");
+    back.id = PANEL;
+    back.setAttribute("role", "dialog");
+    back.setAttribute("aria-modal", "true");
+    back.setAttribute("aria-label", "Which files do you need?");
+
+    var card = el("div", "pkh-card");
+    var head = el("div", "pkh-head");
+    head.appendChild(el("span", "pkh-title", "Which files do you need?"));
+    var x = el("button", "pkh-x", "\u00d7");
+    x.type = "button";
+    x.setAttribute("aria-label", "Close");
+    head.appendChild(x);
+    card.appendChild(head);
+
+    var body = el("div", "pkh-body");
+
+    body.appendChild(el("span", "pkh-h", "What to bring"));
+    REQUIRED.forEach(function (g) { body.appendChild(row(g[0], g[1], g[2])); });
+    body.appendChild(el("span", "pkh-tip",
+      "You only need one game from each line. It looks inside the file, so the name does not matter."));
+
+    body.appendChild(el("span", "pkh-h", "Extras, if you have them"));
+    body.appendChild(el("span", "pkh-opt",
+      "Explorers of Sky adds move effects. Stadium, Stadium 2 and Colosseum add music."));
+
+    body.appendChild(el("span", "pkh-h", "These will not work"));
+    WRONG.forEach(function (g) {
+      var p = el("span", "pkh-no", g[0] + ": ");
+      p.appendChild(el("b", null, g[1]));
+      body.appendChild(p);
+    });
+    body.appendChild(el("span", "pkh-tip",
+      "The game knows the file and still says no."));
+    card.appendChild(body);
+
+    var foot = el("div", "pkh-foot");
+    var go = el("button", "pkh-btn pkh-go", "How to make your own copies");
+    go.type = "button";
+    go.addEventListener("click", function () { window.open(HELP, "_blank"); });
+    var close = el("button", "pkh-btn pkh-close", "Close");
+    close.type = "button";
+    foot.appendChild(go);
+    foot.appendChild(close);
+    card.appendChild(foot);
+    card.appendChild(el("span", "pkh-src",
+      "Use copies you made yourself. This launcher supplies no games."));
+
+    back.appendChild(card);
+
+    function onKey(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        shut();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      var f = back.querySelectorAll("button, [href]");
+      if (!f.length) return;
+      var first = f[0];
+      var last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+
+    function shut() {
+      document.removeEventListener("keydown", onKey, true);
+      back.remove();
+      if (onShut) onShut();
+    }
+
+    x.addEventListener("click", shut);
+    close.addEventListener("click", shut);
+    back.addEventListener("click", function (e) { if (e.target === back) shut(); });
+    back.addEventListener("mousedown", function (e) { e.stopPropagation(); });
+    document.addEventListener("keydown", onKey, true);
+
+    return back;
+  }
+
+  function injectStyle() {
+    if (document.getElementById(STYLE)) return;
+    var st = document.createElement("style");
+    st.id = STYLE;
+    st.textContent = TRIGGER_CSS + PANEL_CSS;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  function openPanel(e) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    if (document.getElementById(PANEL)) return;
+    injectStyle();
+
+    var lastFocus = document.activeElement;
+    // The game hides every body child except a whitelist while the gate is up, so the
+    // panel has to live inside the gate to be seen.
+    var host = document.getElementById("gate") || document.body;
+    host.appendChild(build(function () {
+      if (lastFocus && lastFocus.isConnected) lastFocus.focus();
+    }));
+    var x = document.querySelector("#" + PANEL + " .pkh-x");
+    if (x) x.focus();
+  }
+
+  function trigger() {
     var a = document.createElement("a");
+    a.className = "pkh-trigger";
     a.setAttribute("href", HELP);
-    a.setAttribute("target", "_blank");
-    a.setAttribute("rel", "noopener");
     a.setAttribute("data-pokem-help", "1");
-    a.setAttribute("style", style);
-    a.textContent = text;
+    a.setAttribute("aria-haspopup", "dialog");
+    a.appendChild(questionIcon());
+    a.appendChild(el("span", "pkh-label", "Which files do I need?"));
+    a.addEventListener("click", openPanel);
     return a;
   }
 
   function ensure() {
     if (!HELP) return;
+    injectStyle();
 
-    // First run: the full files gate.
     var gate = document.getElementById("gate");
     var actions = gate && gate.querySelector(".actions");
     if (actions && actions.isConnected && !gate.querySelector("[data-pokem-help]")) {
-      var row = document.createElement("div");
-      row.setAttribute("style", "all: initial;display:block;margin-top:14px;text-align:center;");
-      row.appendChild(makeLink(
-        "Which files do I need?",
-        "all: initial;font: 13px/1 system-ui, sans-serif;color: rgba(255,255,255,.58);" +
-        "text-decoration: underline;text-underline-offset: 3px;cursor: pointer;"
-      ));
-      actions.insertAdjacentElement("afterend", row);
+      var wrap = document.createElement("div");
+      wrap.setAttribute("style",
+        "all:initial;display:flex;justify-content:center;margin-top:14px;");
+      wrap.appendChild(trigger());
+      actions.insertAdjacentElement("afterend", wrap);
     }
 
-    // A character that already exists, with its files removed since.
     var missing = document.querySelector(".missing-files");
     if (missing && !missing.querySelector("[data-pokem-help]")) {
-      var link = makeLink(
-        "Which files do I need?",
-        "all: initial;margin-left:14px;font: 13px/1 system-ui, sans-serif;" +
-        "color: rgba(255,255,255,.58);text-decoration: underline;" +
-        "text-underline-offset: 3px;cursor: pointer;"
-      );
-      missing.appendChild(link);
+      var inline = trigger();
+      inline.style.marginLeft = "12px";
+      missing.appendChild(inline);
     }
   }
 
