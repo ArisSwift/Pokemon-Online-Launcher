@@ -766,6 +766,7 @@ version = "0.1.0"
 dependencies = [
  "cef",
  "discord-rich-presence",
+ "semver",
  "serde_json",
 ]
 

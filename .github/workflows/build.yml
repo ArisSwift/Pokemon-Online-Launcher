@@ -1,0 +1,109 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+            artifact: pokem-online-linux-x86_64
+          - os: windows-latest
+            name: windows-x86_64
+            artifact: pokem-online-windows-x86_64
+          - os: macos-latest
+            name: macos
+            artifact: pokem-online-macos
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+          cache-on-failure: true
+
+      # CEF's wrapper is built by its own CMake project with Ninja.
+      - name: Build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+
+      # CMake needs cl.exe on PATH; cargo finds the linker on its own.
+      - name: Build tools (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          pkg=dist/${{ matrix.artifact }}
+          mkdir -p "$pkg"
+          cp target/release/pokem-online "$pkg/"
+          cp -r assets "$pkg/"
+          cp target/release/*.so "$pkg/" || true
+          cp target/release/*.so.* "$pkg/" || true
+          cp target/release/*.pak "$pkg/" || true
+          cp target/release/*.dat "$pkg/" || true
+          cp target/release/*.bin "$pkg/" || true
+          cp target/release/*.json "$pkg/" || true
+          cp target/release/chrome-sandbox "$pkg/"
+          cp -r target/release/locales "$pkg/"
+          tar -C dist -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pkg = "dist/${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item target/release/pokem-online.exe $pkg
+          Copy-Item -Recurse assets $pkg
+          Copy-Item target/release/*.dll $pkg -ErrorAction SilentlyContinue
+          Copy-Item target/release/*.pak $pkg -ErrorAction SilentlyContinue
+          Copy-Item target/release/*.dat $pkg -ErrorAction SilentlyContinue
+          Copy-Item target/release/*.bin $pkg -ErrorAction SilentlyContinue
+          Copy-Item target/release/*.json $pkg -ErrorAction SilentlyContinue
+          Copy-Item -Recurse target/release/locales $pkg
+          Compress-Archive -Path $pkg -DestinationPath "${{ matrix.artifact }}.zip"
+
+      # A bare Mach-O cannot find the framework, so wrap it in an app bundle.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -eu
+          ./target/release/bundle-macos release dist
+          app="$(ls -d dist/*.app | head -1)"
+          cp -r assets "$app/Contents/assets"
+          ditto -c -k --sequesterRsrc --keepParent "$app" ${{ matrix.artifact }}.zip
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}.tar.gz
+          if-no-files-found: error
