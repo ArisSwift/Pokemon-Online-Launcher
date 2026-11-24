@@ -31,6 +31,8 @@ static LAST_RECOVERY_MS: AtomicU64 = AtomicU64::new(0);
 /// Set while the browser is closing, so a renderer going away is not mistaken for a
 /// crash and reloaded on the way out.
 static CLOSING: AtomicBool = AtomicBool::new(false);
+/// Devtools opens once, not on every navigation.
+static DEVTOOLS_OPENED: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -164,6 +166,79 @@ const PROBE_JS: &str = r##"
 })();
 "##;
 
+/// The first run, in our own words. The game already has a proper files gate, so this
+/// does not explain anything twice: it only makes the first visit obvious, and its
+/// button clicks the game's own "Add game files" so the picker still opens from a real
+/// gesture. It removes itself once files are added.
+const FIRSTRUN_JS: &str = r##"
+(function () {
+  if (window.__pokemFirstRun) return;
+  window.__pokemFirstRun = true;
+
+  var ID = "pokem-firstrun";
+
+  function ensure() {
+    var missing = document.querySelector(".missing-files");
+    var existing = document.getElementById(ID);
+    if (!missing) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) return;
+
+    var bar = document.createElement("div");
+    bar.id = ID;
+    bar.setAttribute("style", [
+      "all: initial",
+      "position: fixed",
+      "left: 50%",
+      "bottom: 18px",
+      "transform: translateX(-50%)",
+      "z-index: 2147483647",
+      "display: flex",
+      "align-items: center",
+      "gap: 14px",
+      "padding: 12px 14px 12px 16px",
+      "border-radius: 12px",
+      "background: #1b1b1f",
+      "border-left: 4px solid #ee3b2b",
+      "box-shadow: 0 10px 30px rgba(0,0,0,.45)",
+      "max-width: 560px"
+    ].join(";"));
+
+    var text = document.createElement("span");
+    text.setAttribute("style", "all: initial;font: 14px/1.4 system-ui, sans-serif;color: #f2f2f4;");
+    text.textContent = "This game is built from a copy you own. Your files stay on this device.";
+
+    var button = document.createElement("button");
+    button.setAttribute("style", [
+      "all: initial",
+      "cursor: pointer",
+      "padding: 9px 14px",
+      "border-radius: 8px",
+      "background: #ee3b2b",
+      "color: #fff",
+      "font: 600 14px/1 system-ui, sans-serif",
+      "white-space: nowrap"
+    ].join(";"));
+    button.textContent = "Add game files";
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      var target = document.querySelector("[data-files]");
+      if (target) target.click();
+    });
+
+    bar.appendChild(text);
+    bar.appendChild(button);
+    document.body.appendChild(bar);
+  }
+
+  ensure();
+  setInterval(ensure, 2000);
+})();
+"##;
+
 /// Files that ship beside the binary: the splash, the offline page. A released build
 /// keeps `assets/` next to the executable, while `cargo build` leaves it in the repo,
 /// two levels up from `target/<profile>`.
@@ -283,10 +358,17 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
 
     // POKEM_UA is only for testing what the site does with a different agent.
     let user_agent = std::env::var("POKEM_UA").unwrap_or_else(|_| USER_AGENT.to_string());
+    // A devtools protocol port, for driving the page from outside. Loopback only, and
+    // only when it is asked for: a debug port is a hole in the browser.
+    let debug_port = std::env::var("POKEM_DEBUG_PORT")
+        .ok()
+        .and_then(|p| p.parse::<i32>().ok())
+        .unwrap_or(0);
     let settings = Settings {
         no_sandbox: 1,
         cache_path: CefString::from(cache.as_str()),
         user_agent: CefString::from(user_agent.as_str()),
+        remote_debugging_port: debug_port,
         ..Default::default()
     };
 
@@ -975,7 +1057,7 @@ wrap_load_handler! {
     impl LoadHandler {
         fn on_load_end(
             &self,
-            _browser: Option<&mut Browser>,
+            browser: Option<&mut Browser>,
             frame: Option<&mut Frame>,
             _http_status_code: i32,
         ) {
@@ -987,9 +1069,20 @@ wrap_load_handler! {
             if !url.starts_with("https://pokem.onl") {
                 return;
             }
-            let code = CefString::from(PROBE_JS);
             let script_url = CefString::from(GAME_URL);
-            frame.execute_java_script(Some(&code), Some(&script_url), 0);
+            let probe = CefString::from(PROBE_JS);
+            frame.execute_java_script(Some(&probe), Some(&script_url), 0);
+            let first_run = CefString::from(FIRSTRUN_JS);
+            frame.execute_java_script(Some(&first_run), Some(&script_url), 0);
+
+            // A console that runs in the page, for testing the site's own API with the
+            // session the page already has. Devtools is a second window, so it exists only
+            // when POKEM_DEVTOOLS=1 asks for it.
+            if std::env::var("POKEM_DEVTOOLS").is_ok() && !DEVTOOLS_OPENED.swap(true, Ordering::SeqCst) {
+                if let Some(host) = browser.as_ref().and_then(|b| b.host()) {
+                    host.show_dev_tools(None, None, None, None);
+                }
+            }
         }
 
         fn on_load_error(
