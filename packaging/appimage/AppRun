@@ -1,0 +1,5 @@
+#!/bin/sh
+# AppImages mount nosuid, so Chromium's setuid sandbox helper cannot be used.
+# Run without the sandbox instead of failing to start.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/pokem-online" --no-sandbox "$@"

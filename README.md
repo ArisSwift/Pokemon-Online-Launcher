@@ -55,6 +55,15 @@ cargo build --release
 open "dist/Pokem Online.app"
 ```
 
+On Linux, the same release binary can go into an AppImage:
+
+```sh
+cargo build --release
+./packaging/appimage/build.sh
+```
+
+That writes `dist/pokem-online-x86_64.AppImage`. It runs without Chromium's setuid sandbox, because an AppImage mount is nosuid.
+
 ## How it fits together
 
 The window is CEF Views, no UI toolkit. A local splash loads first, then swaps to `https://pokem.onl/` in the same window, so the session survives the change.

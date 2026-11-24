@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pokem Online
+GenericName=Pokemon MMO launcher
+Comment=A desktop window for pokem.onl, with Discord Rich Presence
+Exec=pokem-online %U
+Icon=pokem-online
+Terminal=false
+Categories=Game;Network;
+Keywords=pokemon;pokem;mmo;launcher;
+StartupWMClass=pokem-online
