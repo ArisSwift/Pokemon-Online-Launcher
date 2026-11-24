@@ -57,6 +57,20 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      # The CEF download ships an unstripped libcef.so on Linux: 1.4 GB here against
+      # the 277 MB a stripped one takes. Debug symbols are not used at runtime, and
+      # every distro package of CEF is stripped, so strip it before it is packaged.
+      - name: Strip CEF (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          for so in target/release/libcef.so $(find target/release/build -name 'libcef.so' -print); do
+            if [ ! -e "$so" ]; then continue; fi
+            before="$(stat -c %s "$so")"
+            strip --strip-unneeded "$so"
+            echo "$so: $before -> $(stat -c %s "$so") bytes"
+          done
+
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -101,22 +115,6 @@ jobs:
           chmod +x "$tool"
           APPIMAGETOOL="$tool" ./packaging/appimage/build.sh dist
           ls -lh dist/*.AppImage
-
-      # The image came out more than twice the size it is locally, so print what is
-      # actually inside the AppDir before guessing.
-      - name: Inspect the AppDir (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          set -eu
-          appdir="dist/Pokem Online.AppDir"
-          echo "AppDir total: $(du -sh "$appdir" | cut -f1)"
-          echo "files: $(find "$appdir" -type f | wc -l)"
-          du -sh "$appdir"/usr/bin/* | sort -rh | head -10
-          echo "--- CEF directory ---"
-          cef_so="$(find target/release/build -name libcef.so -print -quit)"
-          cef_dir="$(dirname "$cef_so")"
-          echo "cef_dir: $cef_dir, total: $(du -sh "$cef_dir" | cut -f1)"
-          ls -lS "$cef_dir" | head -10
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
