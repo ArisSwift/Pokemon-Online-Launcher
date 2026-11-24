@@ -1,6 +1,12 @@
 use std::path::Path;
 
 fn main() {
+    // Only Linux needs the custom link order below. Windows and macOS let cef-dll-sys
+    // link the wrapper and copy or load the runtime itself.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
+        return;
+    }
+
     // Chromium's close() interposer in base/files/scoped_file_linux.cc resolves the
     // real libc close with dlsym(RTLD_NEXT, "close") and ImmediateCrash()es when it
     // gets NULL. RTLD_NEXT only searches objects loaded *after* libcef.so, so libcef

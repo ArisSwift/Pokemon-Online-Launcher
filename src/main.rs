@@ -9,12 +9,24 @@ const APP_ID: &str = "1574411473172561931";
 const APP_NAME: &str = "Pokem Online";
 const GAME_URL: &str = "https://pokem.onl/";
 
-/// Chromium's own Linux agent with two tokens added. `pokem-online` says who we are, and
-/// `Electron/` is the token the site looks for to tell its desktop app from a browser tab:
-/// without it, the character screen carries an offer to download the official launcher
-/// (`bCe()` in the game bundle returns a platform for a plain browser agent and null for
-/// anything matching `/Electron\//i`).
-const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) pokem-online/0.1.0 Chrome/156.0.0.0 Electron/156.0.0 Safari/537.36";
+/// Chromium's own agent for the platform, with two tokens added. `pokem-online` says
+/// who we are, and `Electron/` is the token the site looks for to tell its desktop app
+/// from a browser tab: without it, the character screen carries an offer to download
+/// the official launcher (`bCe()` in the game bundle returns a platform for a plain
+/// browser agent and null for anything matching `/Electron\//i`).
+#[cfg(target_os = "linux")]
+const UA_PLATFORM: &str = "X11; Linux x86_64";
+#[cfg(target_os = "macos")]
+const UA_PLATFORM: &str = "Macintosh; Intel Mac OS X 10_15_7";
+#[cfg(target_os = "windows")]
+const UA_PLATFORM: &str = "Windows NT 10.0; Win64; x64";
+
+fn user_agent() -> String {
+    format!(
+        "Mozilla/5.0 ({UA_PLATFORM}) AppleWebKit/537.36 (KHTML, like Gecko) \
+         pokem-online/0.1.0 Chrome/156.0.0.0 Electron/156.0.0 Safari/537.36"
+    )
+}
 
 /// The renderer dying twice inside a minute means the page is dying as it loads, so the
 /// recovery goes by way of the offline page instead of spinning on a broken page.
@@ -225,71 +237,107 @@ const FILES_HELP_JS: &str = r##"
   var PANEL_CSS = [
     "#" + PANEL + "{all:initial;position:fixed;inset:0;z-index:2147483647;display:flex;",
     "align-items:center;justify-content:center;padding:24px;",
-    "background:rgba(4,7,14,.62);backdrop-filter:blur(8px);",
-    "-webkit-backdrop-filter:blur(8px);color-scheme:dark;}",
-    "#" + PANEL + " *{all:initial;box-sizing:border-box;",
+    "background:rgba(4,7,14,.64);backdrop-filter:blur(9px);",
+    "-webkit-backdrop-filter:blur(9px);color-scheme:dark;}",
+    "#" + PANEL + " *:not(svg):not(svg *){all:initial;box-sizing:border-box;",
     "font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;}",
-    "#" + PANEL + " .pkh-card{display:flex;flex-direction:column;width:min(600px,100%);",
-    "max-height:90vh;border-radius:18px;border:1px solid rgba(255,255,255,.16);",
-    "background:linear-gradient(180deg,rgba(34,41,60,.88),rgba(13,17,27,.95));",
-    "backdrop-filter:blur(22px) saturate(140%);",
-    "-webkit-backdrop-filter:blur(22px) saturate(140%);",
-    "box-shadow:0 30px 80px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.10);",
+    "#" + PANEL + " .pkh-card{position:relative;display:flex;flex-direction:column;",
+    "width:min(780px,100%);max-height:90vh;border-radius:20px;",
+    "border:1px solid rgba(255,255,255,.16);",
+    "background:linear-gradient(180deg,rgba(36,44,64,.90),rgba(12,16,26,.96));",
+    "backdrop-filter:blur(24px) saturate(150%);",
+    "-webkit-backdrop-filter:blur(24px) saturate(150%);",
+    "box-shadow:0 34px 90px rgba(0,0,0,.62),inset 0 1px 0 rgba(255,255,255,.10);",
     "overflow:hidden;}",
-    "#" + PANEL + " .pkh-head{display:flex;align-items:flex-start;gap:12px;",
-    "padding:16px 18px 10px;}",
-    "#" + PANEL + " .pkh-title{display:block;font:700 17px/1.25 system-ui,sans-serif;",
-    "color:#f4f6fa;flex:1;letter-spacing:.01em;}",
+    "#" + PANEL + " .pkh-card::before{content:'';position:absolute;left:0;right:0;top:0;",
+    "height:3px;background:linear-gradient(90deg,#ee3b2b,#ffcb05 50%,#2a75bb);",
+    "opacity:.9;}",
+    "#" + PANEL + " .pkh-head{display:flex;align-items:flex-start;gap:14px;",
+    "padding:20px 22px 16px;}",
+    "#" + PANEL + " .pkh-ball{display:block;width:30px;height:30px;flex:none;margin-top:1px;",
+    "filter:drop-shadow(0 4px 12px rgba(0,0,0,.45));}",
+    "#" + PANEL + " .pkh-titles{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0;}",
+    "#" + PANEL + " .pkh-title{display:block;font:800 19px/1.2 system-ui,sans-serif;",
+    "color:#f7f9fd;letter-spacing:-.01em;}",
+    "#" + PANEL + " .pkh-sub{display:block;font:12.5px/1.45 system-ui,sans-serif;",
+    "color:#98a4bc;}",
     "#" + PANEL + " .pkh-x{display:flex;align-items:center;justify-content:center;",
-    "cursor:pointer;width:26px;height:26px;padding:0;flex:none;align-self:flex-start;",
-    "border-radius:8px;border:1px solid rgba(255,255,255,.12);",
+    "cursor:pointer;width:28px;height:28px;padding:0;flex:none;align-self:flex-start;",
+    "border-radius:9px;border:1px solid rgba(255,255,255,.12);",
     "background:rgba(255,255,255,.05);color:#c9d2e2;",
     "font:600 15px/1 system-ui,sans-serif;}",
     "#" + PANEL + " .pkh-x:hover{background:rgba(255,255,255,.12);}",
-    "#" + PANEL + " .pkh-body{display:block;padding:0 18px 8px;overflow-y:auto;",
+    "#" + PANEL + " .pkh-body{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,.88fr);",
+    "padding:0 22px;overflow-y:auto;min-height:0;",
     "scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.16) transparent;}",
     "#" + PANEL + " .pkh-body::-webkit-scrollbar{width:9px;}",
     "#" + PANEL + " .pkh-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);",
     "border-radius:9px;}",
     "#" + PANEL + " .pkh-body::-webkit-scrollbar-track{background:transparent;}",
-    "#" + PANEL + " .pkh-h{display:block;font:700 10.5px/1 system-ui,sans-serif;",
-    "letter-spacing:.11em;text-transform:uppercase;color:rgba(255,203,5,.82);",
-    "margin:14px 0 5px;}",
-    "#" + PANEL + " .pkh-body > .pkh-h:first-child{margin-top:0;}",
-    "#" + PANEL + " .pkh-row{display:flex;align-items:baseline;gap:10px;",
-    "padding:6px 0;border-top:1px solid rgba(255,255,255,.07);}",
+    "#" + PANEL + " .pkh-col{padding:14px 0 16px;min-width:0;}",
+    "#" + PANEL + " .pkh-col:first-child{padding-right:22px;}",
+    "#" + PANEL + " .pkh-col + .pkh-col{border-left:1px solid rgba(255,255,255,.08);",
+    "padding-left:24px;}",
+    "#" + PANEL + " .pkh-h{display:flex;align-items:center;gap:9px;",
+    "font:700 10.5px/1 system-ui,sans-serif;letter-spacing:.12em;text-transform:uppercase;",
+    "color:rgba(255,203,5,.85);margin:16px 0 8px;}",
+    "#" + PANEL + " .pkh-col > .pkh-h:first-child{margin-top:0;}",
+    "#" + PANEL + " .pkh-h::after{content:'';height:1px;flex:1;",
+    "background:linear-gradient(90deg,rgba(255,203,5,.22),transparent);}",
+    "#" + PANEL + " .pkh-row{display:block;padding:9px 0;}",
+    "#" + PANEL + " .pkh-row + .pkh-row{border-top:1px solid rgba(255,255,255,.07);}",
     "#" + PANEL + " .pkh-name{display:block;font:600 13.5px/1.35 system-ui,sans-serif;",
-    "color:#eef1f7;flex:none;max-width:56%;}",
-    "#" + PANEL + " .pkh-why{display:block;font:12.5px/1.4 system-ui,sans-serif;",
-    "color:#8f9ab1;flex:1;text-align:right;}",
+    "color:#f0f3f9;overflow-wrap:break-word;}",
     "#" + PANEL + " .pkh-chip{display:inline-block;padding:1px 7px;border-radius:999px;",
-    "border:1px solid rgba(255,255,255,.12);font:600 10px/16px system-ui,sans-serif;",
-    "letter-spacing:.06em;color:#aab6cc;margin-left:7px;vertical-align:1px;}",
-    "#" + PANEL + " .pkh-no{display:block;font:12px/1.55 system-ui,sans-serif;",
-    "color:#8f9ab1;margin:0 0 2px;}",
+    "font:700 9.5px/15px system-ui,sans-serif;letter-spacing:.08em;margin-left:7px;",
+    "vertical-align:1px;border:1px solid rgba(255,255,255,.12);color:#aab6cc;}",
+    "#" + PANEL + " .pkh-chip[data-sys='DS']{color:#ff9a8f;border-color:rgba(238,59,43,.38);",
+    "background:rgba(238,59,43,.10);}",
+    "#" + PANEL + " .pkh-chip[data-sys='GBA']{color:#c4a9ff;border-color:rgba(143,109,214,.40);",
+    "background:rgba(143,109,214,.12);}",
+    "#" + PANEL + " .pkh-chip[data-sys='N64']{color:#7fe0c2;border-color:rgba(31,161,122,.40);",
+    "background:rgba(31,161,122,.12);}",
+    "#" + PANEL + " .pkh-chip[data-sys='GC']{color:#d6a9ff;border-color:rgba(180,124,224,.40);",
+    "background:rgba(180,124,224,.12);}",
+    "#" + PANEL + " .pkh-why{display:block;font:12.5px/1.45 system-ui,sans-serif;",
+    "color:#8d99b0;margin-top:2px;}",
+    "#" + PANEL + " .pkh-opt{display:block;font:12.5px/1.5 system-ui,sans-serif;",
+    "color:#9aa5ba;padding:2px 0 4px;}",
+    "#" + PANEL + " .pkh-no{display:block;font:12px/1.5 system-ui,sans-serif;",
+    "color:#8d99b0;padding:4px 0;}",
+    "#" + PANEL + " .pkh-no::before{content:'\\00d7';color:rgba(238,59,43,.9);",
+    "font-weight:700;margin-right:7px;}",
     "#" + PANEL + " .pkh-no b{display:inline;font-weight:600;color:#ffd05a;}",
-    "#" + PANEL + " .pkh-opt{display:block;font:12.5px/1.45 system-ui,sans-serif;",
-    "color:#9aa5ba;margin:2px 0 0;}",
-    "#" + PANEL + " .pkh-tip{display:block;font:12px/1.5 system-ui,sans-serif;",
-    "color:#8c97ad;margin:8px 0 2px;padding-top:8px;",
+    "#" + PANEL + " .pkh-tip{display:block;font:11.5px/1.5 system-ui,sans-serif;",
+    "color:#7f8ba2;margin-top:10px;padding-top:9px;",
     "border-top:1px solid rgba(255,255,255,.07);}",
     "#" + PANEL + " .pkh-foot{display:flex;align-items:center;gap:10px;",
-    "padding:13px 18px 15px;border-top:1px solid rgba(255,255,255,.08);",
-    "background:rgba(255,255,255,.02);}",
-    "#" + PANEL + " .pkh-btn{display:block;cursor:pointer;border-radius:9px;",
-    "padding:10px 15px;font:600 13px/1 system-ui,sans-serif;border:1px solid transparent;",
+    "padding:15px 22px;border-top:1px solid rgba(255,255,255,.09);",
+    "background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(0,0,0,.10));}",
+    "#" + PANEL + " .pkh-btn{display:block;cursor:pointer;border-radius:10px;",
+    "padding:12px 16px;font:600 13px/1 system-ui,sans-serif;border:1px solid transparent;",
     "transition:background .15s ease,border-color .15s ease;}",
     "#" + PANEL + " .pkh-btn:focus-visible{outline:3px solid rgba(255,203,5,.35);",
     "outline-offset:2px;}",
-    "#" + PANEL + " .pkh-go{background:#ffcb05;color:#1b1600;flex:1;text-align:center;",
-    "box-shadow:0 4px 14px rgba(255,203,5,.18);}",
-    "#" + PANEL + " .pkh-go:hover{background:#ffd83d;}",
-    "#" + PANEL + " .pkh-go:active{background:#eebd00;}",
+    "#" + PANEL + " .pkh-go{flex:1;text-align:center;",
+    "background:linear-gradient(180deg,#ffd83d,#ffcb05);color:#1b1600;",
+    "box-shadow:0 6px 18px rgba(255,203,5,.20),inset 0 1px 0 rgba(255,255,255,.45);}",
+    "#" + PANEL + " .pkh-go:hover{background:linear-gradient(180deg,#ffe15c,#ffd21a);}",
+    "#" + PANEL + " .pkh-go:active{background:linear-gradient(180deg,#ffd21a,#f0bf00);}",
+    "#" + PANEL + " .pkh-arrow{display:inline-block;margin-left:8px;font-size:14px;",
+    "line-height:1;vertical-align:-1px;opacity:.75;}",
     "#" + PANEL + " .pkh-close{background:rgba(255,255,255,.06);",
     "border-color:rgba(255,255,255,.12);color:#cfd8e8;}",
     "#" + PANEL + " .pkh-close:hover{background:rgba(255,255,255,.12);}",
-    "#" + PANEL + " .pkh-src{display:block;font:11px/1.4 system-ui,sans-serif;",
-    "color:#5f6a80;padding:0 18px 12px;}",
+    "@media (max-width:700px){",
+    "#" + PANEL + " .pkh-card{max-height:92vh;}",
+    "#" + PANEL + " .pkh-body{grid-template-columns:1fr;padding:0 18px;}",
+    "#" + PANEL + " .pkh-col{padding:12px 0 14px;}",
+    "#" + PANEL + " .pkh-col:first-child{padding-right:0;}",
+    "#" + PANEL + " .pkh-col + .pkh-col{border-left:0;",
+    "border-top:1px solid rgba(255,255,255,.09);padding-left:0;}",
+    "#" + PANEL + " .pkh-head{padding:18px 18px 14px;}",
+    "#" + PANEL + " .pkh-foot{padding:13px 18px;}}",
     "@media (prefers-reduced-motion:reduce){#" + PANEL + " .pkh-btn{transition:none;}}"
   ].join("");
 
@@ -302,11 +350,11 @@ const FILES_HELP_JS: &str = r##"
   ];
 
   var WRONG = [
-    ["FireRed, LeafGreen, Ruby or Sapphire", "use Emerald instead"],
-    ["Gold, Silver or Crystal", "use HeartGold or SoulSilver instead"],
-    ["Ranger or Shadows of Almia", "use Guardian Signs instead"],
-    ["Explorers of Time or Darkness", "use Sky instead"],
-    ["Pokémon XD", "not used at all"]
+    ["FireRed, LeafGreen, Ruby or Sapphire", "Use Emerald instead"],
+    ["Gold, Silver or Crystal", "Use HeartGold or SoulSilver instead"],
+    ["Ranger or Shadows of Almia", "Use Guardian Signs instead"],
+    ["Explorers of Time or Darkness", "Use Sky instead"],
+    ["Pokémon XD", "Not used at all"]
   ];
 
   function el(tag, cls, text) {
@@ -342,10 +390,34 @@ const FILES_HELP_JS: &str = r##"
     return svg;
   }
 
+  function ballIcon() {
+    var svg = svgEl("svg", {
+      "class": "pkh-ball", viewBox: "0 0 100 100",
+      "aria-hidden": "true", focusable: "false"
+    });
+    svg.appendChild(svgEl("circle", { cx: "50", cy: "50", r: "46", fill: "#f4f6fa" }));
+    svg.appendChild(svgEl("path", { d: "M4 50a46 46 0 0 1 92 0Z", fill: "#ee3b2b" }));
+    svg.appendChild(svgEl("circle", {
+      cx: "50", cy: "50", r: "46", fill: "none",
+      stroke: "#0d111b", "stroke-width": "6"
+    }));
+    svg.appendChild(svgEl("rect", {
+      x: "4", y: "46", width: "92", height: "8", fill: "#0d111b"
+    }));
+    svg.appendChild(svgEl("circle", { cx: "50", cy: "50", r: "15", fill: "#0d111b" }));
+    svg.appendChild(svgEl("circle", { cx: "50", cy: "50", r: "10", fill: "#f4f6fa" }));
+    svg.appendChild(svgEl("circle", { cx: "50", cy: "50", r: "5", fill: "#0d111b" }));
+    return svg;
+  }
+
   function row(name, sys, why) {
     var r = el("div", "pkh-row");
     var n = el("span", "pkh-name", name);
-    if (sys) n.appendChild(el("span", "pkh-chip", sys));
+    if (sys) {
+      var chip = el("span", "pkh-chip", sys);
+      chip.setAttribute("data-sys", sys);
+      n.appendChild(chip);
+    }
     r.appendChild(n);
     r.appendChild(el("span", "pkh-why", why));
     return r;
@@ -356,11 +428,20 @@ const FILES_HELP_JS: &str = r##"
     back.id = PANEL;
     back.setAttribute("role", "dialog");
     back.setAttribute("aria-modal", "true");
-    back.setAttribute("aria-label", "Which files do you need?");
+    back.setAttribute("aria-labelledby", "pokem-files-title");
 
     var card = el("div", "pkh-card");
     var head = el("div", "pkh-head");
-    head.appendChild(el("span", "pkh-title", "Which files do you need?"));
+    head.appendChild(ballIcon());
+
+    var titles = el("div", "pkh-titles");
+    var title = el("span", "pkh-title", "Which files do you need?");
+    title.id = "pokem-files-title";
+    titles.appendChild(title);
+    titles.appendChild(el("span", "pkh-sub",
+      "Bring your own copies. They are read here and never uploaded."));
+    head.appendChild(titles);
+
     var x = el("button", "pkh-x", "\u00d7");
     x.type = "button";
     x.setAttribute("aria-label", "Close");
@@ -369,36 +450,39 @@ const FILES_HELP_JS: &str = r##"
 
     var body = el("div", "pkh-body");
 
-    body.appendChild(el("span", "pkh-h", "What to bring"));
-    REQUIRED.forEach(function (g) { body.appendChild(row(g[0], g[1], g[2])); });
-    body.appendChild(el("span", "pkh-tip",
+    var left = el("div", "pkh-col");
+    left.appendChild(el("span", "pkh-h", "What to bring"));
+    REQUIRED.forEach(function (g) { left.appendChild(row(g[0], g[1], g[2])); });
+    left.appendChild(el("span", "pkh-tip",
       "You only need one game from each line. It looks inside the file, so the name does not matter."));
+    body.appendChild(left);
 
-    body.appendChild(el("span", "pkh-h", "Extras, if you have them"));
-    body.appendChild(el("span", "pkh-opt",
+    var right = el("div", "pkh-col");
+    right.appendChild(el("span", "pkh-h", "Extras, if you have them"));
+    right.appendChild(el("span", "pkh-opt",
       "Explorers of Sky adds move effects. Stadium, Stadium 2 and Colosseum add music."));
-
-    body.appendChild(el("span", "pkh-h", "These will not work"));
+    right.appendChild(el("span", "pkh-h", "These will not work"));
     WRONG.forEach(function (g) {
       var p = el("span", "pkh-no", g[0] + ": ");
       p.appendChild(el("b", null, g[1]));
-      body.appendChild(p);
+      right.appendChild(p);
     });
-    body.appendChild(el("span", "pkh-tip",
+    right.appendChild(el("span", "pkh-tip",
       "The game knows the file and still says no."));
+    body.appendChild(right);
     card.appendChild(body);
 
     var foot = el("div", "pkh-foot");
-    var go = el("button", "pkh-btn pkh-go", "How to make your own copies");
+    var go = el("button", "pkh-btn pkh-go");
     go.type = "button";
+    go.appendChild(document.createTextNode("How to make your own copies"));
+    go.appendChild(el("span", "pkh-arrow", "\u2197"));
     go.addEventListener("click", function () { window.open(HELP, "_blank"); });
     var close = el("button", "pkh-btn pkh-close", "Close");
     close.type = "button";
     foot.appendChild(go);
     foot.appendChild(close);
     card.appendChild(foot);
-    card.appendChild(el("span", "pkh-src",
-      "Use copies you made yourself. This launcher supplies no games."));
 
     back.appendChild(card);
 
@@ -578,6 +662,16 @@ fn open_external(url: &str) {
 }
 
 fn main() {
+    // macOS ships CEF as a framework that has to be loaded by hand before any other CEF
+    // call. The main app finds it beside the executable; helper processes sit deeper in
+    // the bundle and resolve it from there.
+    #[cfg(target_os = "macos")]
+    let _cef_loader = {
+        let helper = std::env::args().any(|arg| arg == "--type" || arg.starts_with("--type="));
+        let exe = std::env::current_exe().expect("current executable");
+        cef::library_loader::LibraryLoader::new(&exe, helper)
+    };
+
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
 
     let args = args::Args::new();
@@ -619,7 +713,7 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
     clear_stale_singleton(&cache);
 
     // POKEM_UA is only for testing what the site does with a different agent.
-    let user_agent = std::env::var("POKEM_UA").unwrap_or_else(|_| USER_AGENT.to_string());
+    let user_agent = std::env::var("POKEM_UA").unwrap_or_else(|_| user_agent());
     // A devtools protocol port, for driving the page from outside. Loopback only, and
     // only when it is asked for: a debug port is a hole in the browser.
     let debug_port = std::env::var("POKEM_DEBUG_PORT")
@@ -646,10 +740,31 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
 }
 
 fn cache_dir() -> String {
-    let base = std::env::var("XDG_CACHE_HOME")
+    cache_base().join("pokem-online").to_string_lossy().into_owned()
+}
+
+#[cfg(target_os = "windows")]
+fn cache_base() -> std::path::PathBuf {
+    std::env::var("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache"));
-    base.join("pokem-online").to_string_lossy().into_owned()
+        .unwrap_or_else(|_| std::env::temp_dir())
+}
+
+#[cfg(target_os = "macos")]
+fn cache_base() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(|home| std::path::PathBuf::from(home).join("Library").join("Caches"))
+        .unwrap_or_else(|_| std::env::temp_dir())
+}
+
+#[cfg(target_os = "linux")]
+fn cache_base() -> std::path::PathBuf {
+    std::env::var("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| {
+            std::env::var("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+        })
+        .unwrap_or_else(|_| std::env::temp_dir())
 }
 
 /// Chromium leaves a SingletonLock symlink (`<host>-<pid>`) behind when the browser
