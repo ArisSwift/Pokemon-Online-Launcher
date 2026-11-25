@@ -22,9 +22,11 @@ const UA_PLATFORM: &str = "Macintosh; Intel Mac OS X 10_15_7";
 const UA_PLATFORM: &str = "Windows NT 10.0; Win64; x64";
 
 fn user_agent() -> String {
+    // The version in the UA follows the build, so it cannot drift from the release.
+    let version = env!("CARGO_PKG_VERSION");
     format!(
         "Mozilla/5.0 ({UA_PLATFORM}) AppleWebKit/537.36 (KHTML, like Gecko) \
-         pokem-online/0.1.0 Chrome/156.0.0.0 Electron/156.0.0 Safari/537.36"
+         pokem-online/{version} Chrome/156.0.0.0 Electron/156.0.0 Safari/537.36"
     )
 }
 
@@ -2132,10 +2134,27 @@ mod tests {
     }
 
     #[test]
+    fn the_user_agent_names_this_build() {
+        let ua = user_agent();
+        assert!(
+            ua.contains(&format!("pokem-online/{}", env!("CARGO_PKG_VERSION"))),
+            "{ua}"
+        );
+    }
+
+    #[test]
     fn only_a_higher_version_counts_as_an_update() {
-        assert!(is_newer("v0.2.0"));
-        assert!(!is_newer("v0.1.0"));
-        assert!(!is_newer("v0.0.9"));
+        // Relative to the version being built, so a bump does not need this test edited.
+        let current = version_tuple(env!("CARGO_PKG_VERSION")).expect("the build carries a version");
+        let (major, minor, patch) = current;
+        let tag = |v: (u32, u32, u32)| format!("v{}.{}.{}", v.0, v.1, v.2);
+
+        assert!(!is_newer(&tag(current)), "the running version is not an update");
+        assert!(is_newer(&tag((major, minor + 1, patch))), "a higher minor is an update");
+        let older = (major, minor.saturating_sub(1), 0);
+        if older < current {
+            assert!(!is_newer(&tag(older)), "an older version is not an update");
+        }
         assert!(!is_newer("nightly"));
         assert_eq!(version_tuple("v1.2.3-rc1"), Some((1, 2, 3)));
         assert_eq!(version_tuple("0.10.0"), Some((0, 10, 0)));

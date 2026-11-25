@@ -1,6 +1,6 @@
 [package]
 name = "pokem-online"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Desktop launcher for pokem.onl with Discord Rich Presence"
 
