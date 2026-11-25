@@ -43,6 +43,14 @@ const KEY_F1: i32 = 0x70;
 /// The wiki is a separate page on the game's own origin, and it reads its own data.
 const WIKI_URL: &str = "https://pokem.onl/wiki";
 
+/// Where the newest release announces itself, and where the notice sends the player.
+const RELEASE_API: &str =
+    "https://api.github.com/repos/ArisSwift/Pokemon-Online-Launcher/releases/latest";
+const RELEASE_PAGE: &str =
+    "https://github.com/ArisSwift/Pokemon-Online-Launcher/releases/latest";
+/// A day is often enough for a release notice, and it keeps the API call rare.
+const UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
 static LAST_RECOVERY_MS: AtomicU64 = AtomicU64::new(0);
 /// Set while the browser is closing, so a renderer going away is not mistaken for a
 /// crash and reloaded on the way out.
@@ -54,6 +62,19 @@ static DEVTOOLS_OPENED: AtomicBool = AtomicBool::new(false);
 /// so it is only touched from a task on the UI thread; this is just a place to hold a
 /// reference until that task runs.
 static WINDOW: Mutex<Option<Window>> = Mutex::new(None);
+
+/// What the page last said about where you are: the map's own name from the minimap, and
+/// the floor name from `#where`. The wiki indexes maps by the towns and routes inside
+/// them, so the wiki key prefers the map.
+static WHERE: Mutex<(Option<String>, Option<String>)> = Mutex::new((None, None));
+
+/// The page's browser, held so the update task can reach its main frame long after the
+/// network round trip that decided the notice.
+static BROWSER: Mutex<Option<Browser>> = Mutex::new(None);
+/// The newest release, kept so a window built after the answer still shows it.
+static UPDATE_READY: Mutex<Option<String>> = Mutex::new(None);
+/// A notice is a heads up, not a nag: it is injected once per run.
+static NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
 
 wrap_task! {
     struct RaiseWindow {}
@@ -73,6 +94,18 @@ wrap_task! {
             }
             window.bring_to_top();
             window.activate();
+        }
+    }
+}
+
+wrap_task! {
+    struct ShowUpdateNotice {
+        version: String,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            apply_update_notice(&self.version);
         }
     }
 }
@@ -195,6 +228,9 @@ const PROBE_JS: &str = r##"
         name: (character && (character.name || character.nickname)) ||
               (s && s.user && (s.user.name || s.user.username)) || null,
         place: placeText(),
+        // The minimap names the map itself, indoors included, which is what the wiki
+        // indexes. `place` above is richer but a floor name, so keep both.
+        map: textOf(document.getElementById("minimap")),
         region: wire.region || null,
         activity: wire.state || null,
         session: !!s
@@ -658,6 +694,36 @@ fn is_game_url(url: &str) -> bool {
     }
 }
 
+/// Percent-encode anything a hash query cannot carry, so a place name cannot smuggle its
+/// own `#` or `&` into the wiki's route.
+fn encode_query(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// F1 lands on the map you are standing on. The wiki's places page filters on name, key and
+/// the areas inside a map, so the map name narrows it to one row without fetching the
+/// wiki's data. With no place known, F1 opens the wiki itself.
+fn wiki_url_for(map: Option<&str>, floor: Option<&str>) -> String {
+    let wanted = [map, floor]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|text| !text.is_empty());
+    match wanted {
+        Some(text) => format!("{WIKI_URL}#/places?q={}", encode_query(text)),
+        None => WIKI_URL.to_string(),
+    }
+}
+
 /// The wiki lives on the game's origin, so `is_game_url` would let it through. Loading it
 /// in this window replaces the running game with no way back, so it goes to a browser.
 fn is_wiki_url(url: &str) -> bool {
@@ -700,6 +766,179 @@ fn open_external(url: &str) {
     command.arg(url);
     let _ = command.spawn();
 }
+
+/// `v0.1.0` and `0.1.0` both parse, and a suffix like `-rc1` is ignored.
+fn version_tuple(tag: &str) -> Option<(u32, u32, u32)> {
+    let text = tag.trim().trim_start_matches('v');
+    let core = text.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn is_newer(tag: &str) -> bool {
+    match (version_tuple(tag), version_tuple(env!("CARGO_PKG_VERSION"))) {
+        (Some(latest), Some(running)) => latest > running,
+        _ => false,
+    }
+}
+
+/// A tag is only ever shown, but it still gets there as text and as a script literal, so
+/// anything that is not part of a version number is dropped.
+fn safe_version(tag: &str) -> String {
+    tag.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect()
+}
+
+fn update_cache_path(cache: &str) -> std::path::PathBuf {
+    std::path::Path::new(cache).join("launcher-update.json")
+}
+
+fn read_update_cache(cache: &str) -> Option<(String, u64)> {
+    let text = std::fs::read_to_string(update_cache_path(cache)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some((
+        value.get("latest")?.as_str()?.to_owned(),
+        value.get("checked")?.as_u64()?,
+    ))
+}
+
+fn write_update_cache(cache: &str, latest: &str, checked: u64) {
+    let body = serde_json::json!({ "latest": latest, "checked": checked }).to_string();
+    let _ = std::fs::create_dir_all(cache);
+    let _ = std::fs::write(update_cache_path(cache), body);
+}
+
+/// GitHub wants a user agent and answers with `tag_name`. curl is already on every
+/// platform this ships to, so the launcher does not grow a TLS stack for one call a day.
+fn fetch_latest_tag() -> Option<String> {
+    let mut command = std::process::Command::new("curl");
+    command.args([
+        "-fsSL",
+        "--max-time",
+        "8",
+        "-H",
+        "User-Agent: pokem-online-launcher",
+        RELEASE_API,
+    ]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window behind the launcher.
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    value.get("tag_name")?.as_str().map(str::to_owned)
+}
+
+/// Once a day, ask GitHub for the newest release. A failed check stays quiet: a missing
+/// notice is not worth an error on anyone's screen.
+fn spawn_update_check(cache: String) {
+    std::thread::spawn(move || {
+        let now = now_ms() / 1000;
+        // POKEM_UPDATE_TAG pretends a release exists, so the notice can be looked at
+        // without cutting one.
+        let forced = std::env::var("POKEM_UPDATE_TAG").ok().filter(|tag| !tag.is_empty());
+        let latest = match forced {
+            Some(tag) => Some(tag),
+            None => match read_update_cache(&cache) {
+                Some((tag, checked)) if now.saturating_sub(checked) < UPDATE_INTERVAL_SECS => {
+                    Some(tag)
+                }
+                _ => fetch_latest_tag().inspect(|tag| write_update_cache(&cache, tag, now)),
+            },
+        };
+        let Some(latest) = latest else { return };
+        if !is_newer(&latest) {
+            return;
+        }
+        if debug_echo() {
+            eprintln!("update available: {latest}");
+        }
+        if let Ok(mut slot) = UPDATE_READY.lock() {
+            *slot = Some(latest.clone());
+        }
+        let mut task = ShowUpdateNotice::new(latest);
+        post_task(ThreadId::UI, Some(&mut task));
+    });
+}
+
+fn update_notice_js(version: &str) -> String {
+    UPDATE_JS
+        .replace("__VERSION__", version)
+        .replace("__RELEASE__", RELEASE_PAGE)
+}
+
+/// Title first, because it survives fullscreen being toggled, then one line in the page.
+fn apply_update_notice(version: &str) {
+    let version = safe_version(version);
+    if let Some(window) = WINDOW.lock().ok().and_then(|held| held.clone()) {
+        if window.is_closed() == 0 {
+            let title = CefString::from(format!("{APP_NAME} · {version} ready").as_str());
+            window.set_title(Some(&title));
+        }
+    }
+    if NOTICE_SHOWN.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(browser) = BROWSER.lock().ok().and_then(|held| held.clone()) else {
+        return;
+    };
+    let Some(frame) = browser.main_frame() else {
+        return;
+    };
+    if frame.is_main() != 1 {
+        return;
+    }
+    NOTICE_SHOWN.store(true, Ordering::SeqCst);
+    let script = CefString::from(update_notice_js(&version).as_str());
+    let source = CefString::from(GAME_URL);
+    frame.execute_java_script(Some(&script), Some(&source), 0);
+}
+
+/// Injected once per run, in the game page. It is text only: a link to the release and an
+/// x to dismiss it, over the bottom corner of the game rather than replacing anything.
+const UPDATE_JS: &str = r##"
+(function () {
+  function show() {
+    if (!document.body || document.getElementById("pokem-launcher-update")) return;
+    var box = document.createElement("div");
+    box.id = "pokem-launcher-update";
+    box.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:2147483647;" +
+      "display:flex;gap:10px;align-items:center;background:#15151a;color:#f1f1f4;" +
+      "font:13px/1.35 system-ui,sans-serif;padding:9px 11px;border-radius:9px;" +
+      "border:1px solid #2f2f38;box-shadow:0 8px 24px rgba(0,0,0,.5)";
+    var link = document.createElement("a");
+    link.href = "__RELEASE__";
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = "Launcher __VERSION__ is out";
+    link.style.cssText = "color:#8fd6ff;font-weight:600;text-decoration:none";
+    var close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "\u00d7";
+    close.setAttribute("aria-label", "Dismiss");
+    close.style.cssText = "background:none;border:0;color:#9a9aa2;font-size:18px;" +
+      "line-height:1;cursor:pointer;padding:0 2px";
+    close.onclick = function () { box.remove(); };
+    box.appendChild(link);
+    box.appendChild(close);
+    document.body.appendChild(box);
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", show, { once: true });
+  } else {
+    show();
+  }
+})();
+"##;
 
 fn main() {
     // macOS ships CEF as a framework that has to be loaded by hand before any other CEF
@@ -792,6 +1031,8 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
     if let Some(instance) = instance.as_mut() {
         instance.listen();
     }
+
+    spawn_update_check(cache.clone());
 
     run_message_loop();
     shutdown();
@@ -1379,6 +1620,11 @@ wrap_window_delegate! {
             window.set_accelerator(CMD_RELOAD, KEY_F5, 0, 0, 0, 1);
             // F1 is free in the game, so it carries the wiki.
             window.set_accelerator(CMD_WIKI, KEY_F1, 0, 0, 0, 1);
+            if let Some(browser) = browser_view.browser() {
+                if let Ok(mut held) = BROWSER.lock() {
+                    *held = Some(browser);
+                }
+            }
             if self.initial_show_state != ShowState::HIDDEN {
                 window.show();
             }
@@ -1387,6 +1633,10 @@ wrap_window_delegate! {
                 if let Ok(mut held) = WINDOW.lock() {
                     *held = Some(window.clone());
                 }
+            }
+            // The check can land before the window exists; then this is the first chance.
+            if let Some(version) = UPDATE_READY.lock().ok().and_then(|held| held.clone()) {
+                apply_update_notice(&version);
             }
         }
 
@@ -1400,6 +1650,9 @@ wrap_window_delegate! {
 
         fn on_window_destroyed(&self, _window: Option<&mut Window>) {
             *self.browser_view.borrow_mut() = None;
+            if let Ok(mut held) = BROWSER.lock() {
+                *held = None;
+            }
             if self.persist {
                 if let Ok(mut held) = WINDOW.lock() {
                     *held = None;
@@ -1425,7 +1678,8 @@ wrap_window_delegate! {
                 }
                 CMD_WIKI => {
                     // In the player's own browser, so the game keeps running behind it.
-                    open_external(WIKI_URL);
+                    let (map, floor) = WHERE.lock().map(|held| held.clone()).unwrap_or((None, None));
+                    open_external(&wiki_url_for(map.as_deref(), floor.as_deref()));
                     1
                 }
                 _ => 0,
@@ -1641,6 +1895,10 @@ wrap_display_handler! {
                         region: field("region"),
                         activity: field("activity"),
                     };
+                    // Kept for the wiki key, which wants the map rather than the floor.
+                    if let Ok(mut held) = WHERE.lock() {
+                        *held = (field("map"), snapshot.place.clone());
+                    }
                     if let Some(tx) = PRESENCE_TX.get() {
                         let _ = tx.send(snapshot);
                     }
@@ -1676,6 +1934,11 @@ wrap_load_handler! {
                 FILES_HELP_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
             );
             frame.execute_java_script(Some(&files_help), Some(&script_url), 0);
+
+            // A reload starts a fresh page, so the notice goes back in if it was dismissed.
+            if let Some(version) = UPDATE_READY.lock().ok().and_then(|held| held.clone()) {
+                apply_update_notice(&version);
+            }
 
             // A console that runs in the page, for testing the site's own API with the
             // session the page already has. Devtools is a second window, so it exists only
@@ -1765,6 +2028,49 @@ mod tests {
             assert!(is_wiki_url(url), "{url} should be the wiki");
             assert!(is_game_url(url), "{url} is still the game's origin");
         }
+    }
+
+    #[test]
+    fn the_wiki_key_opens_the_map_you_are_standing_on() {
+        assert_eq!(
+            wiki_url_for(Some("Pallet Town"), None),
+            "https://pokem.onl/wiki#/places?q=Pallet%20Town"
+        );
+        // Indoors the minimap still names the map; the floor is only a fallback.
+        assert_eq!(
+            wiki_url_for(Some("Pallet Town"), Some("Red's House 1F")),
+            "https://pokem.onl/wiki#/places?q=Pallet%20Town"
+        );
+        assert_eq!(
+            wiki_url_for(None, Some("Cerulean Gym")),
+            "https://pokem.onl/wiki#/places?q=Cerulean%20Gym"
+        );
+        assert_eq!(wiki_url_for(None, None), WIKI_URL);
+        assert_eq!(wiki_url_for(Some("   "), None), WIKI_URL);
+    }
+
+    #[test]
+    fn only_a_higher_version_counts_as_an_update() {
+        assert!(is_newer("v0.2.0"));
+        assert!(!is_newer("v0.1.0"));
+        assert!(!is_newer("v0.0.9"));
+        assert!(!is_newer("nightly"));
+        assert_eq!(version_tuple("v1.2.3-rc1"), Some((1, 2, 3)));
+        assert_eq!(version_tuple("0.10.0"), Some((0, 10, 0)));
+    }
+
+    #[test]
+    fn a_tag_cannot_carry_anything_but_a_version_into_the_notice() {
+        assert_eq!(safe_version("v0.2.0"), "v0.2.0");
+        assert_eq!(safe_version("v0.2.0\"><img onerror=x>"), "v0.2.0imgonerrorx");
+    }
+
+    #[test]
+    fn a_place_name_cannot_add_its_own_route() {
+        assert_eq!(
+            wiki_url_for(Some("A&B#/pokemon/1"), None),
+            "https://pokem.onl/wiki#/places?q=A%26B%23%2Fpokemon%2F1"
+        );
     }
 
     #[test]
