@@ -35,9 +35,13 @@ const CRASH_GAP_MS: u64 = 60_000;
 /// Accelerator ids for the keys a bare Chromium window does not wire up itself.
 const CMD_FULLSCREEN: i32 = 1;
 const CMD_RELOAD: i32 = 2;
-/// F11 and F5 from Chromium's keyboard codes.
+const CMD_WIKI: i32 = 3;
+/// F11, F5 and F1 from Chromium's keyboard codes.
 const KEY_F11: i32 = 0x7a;
 const KEY_F5: i32 = 0x74;
+const KEY_F1: i32 = 0x70;
+/// The wiki is a separate page on the game's own origin, and it reads its own data.
+const WIKI_URL: &str = "https://pokem.onl/wiki";
 
 static LAST_RECOVERY_MS: AtomicU64 = AtomicU64::new(0);
 /// Set while the browser is closing, so a renderer going away is not mistaken for a
@@ -649,6 +653,15 @@ fn offline_url() -> String {
 /// The game's own origin, and nothing that merely begins with its name.
 fn is_game_url(url: &str) -> bool {
     match url.strip_prefix("https://pokem.onl") {
+        Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#'),
+        None => false,
+    }
+}
+
+/// The wiki lives on the game's origin, so `is_game_url` would let it through. Loading it
+/// in this window replaces the running game with no way back, so it goes to a browser.
+fn is_wiki_url(url: &str) -> bool {
+    match url.strip_prefix("https://pokem.onl/wiki") {
         Some(rest) => rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#'),
         None => false,
     }
@@ -1364,6 +1377,8 @@ wrap_window_delegate! {
             // High priority so the game's own key handling cannot swallow them.
             window.set_accelerator(CMD_FULLSCREEN, KEY_F11, 0, 0, 0, 1);
             window.set_accelerator(CMD_RELOAD, KEY_F5, 0, 0, 0, 1);
+            // F1 is free in the game, so it carries the wiki.
+            window.set_accelerator(CMD_WIKI, KEY_F1, 0, 0, 0, 1);
             if self.initial_show_state != ShowState::HIDDEN {
                 window.show();
             }
@@ -1406,6 +1421,11 @@ wrap_window_delegate! {
                             browser.reload();
                         }
                     }
+                    1
+                }
+                CMD_WIKI => {
+                    // In the player's own browser, so the game keeps running behind it.
+                    open_external(WIKI_URL);
                     1
                 }
                 _ => 0,
@@ -1538,6 +1558,10 @@ wrap_request_handler! {
                 return 0;
             }
             let url = CefString::from(&request.url()).to_string();
+            if is_wiki_url(&url) {
+                open_external(&url);
+                return 1;
+            }
             if is_game_url(&url) || is_launcher_page(&url) {
                 return 0;
             }
@@ -1722,6 +1746,37 @@ wrap_life_span_handler! {
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             CLOSING.store(true, Ordering::Relaxed);
             quit_message_loop();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wiki_is_its_own_page_on_the_game_origin() {
+        for url in [
+            WIKI_URL,
+            "https://pokem.onl/wiki/",
+            "https://pokem.onl/wiki/places/kanto",
+            "https://pokem.onl/wiki?q=bulbasaur",
+        ] {
+            assert!(is_wiki_url(url), "{url} should be the wiki");
+            assert!(is_game_url(url), "{url} is still the game's origin");
+        }
+    }
+
+    #[test]
+    fn a_name_that_merely_starts_with_wiki_is_not_the_wiki() {
+        for url in [
+            "https://pokem.onl/wikileaks",
+            "https://pokem.onl/wik",
+            "https://pokem.onl/",
+            "https://pokem.onl/wiki.example.test/",
+            "https://evil.test/https://pokem.onl/wiki",
+        ] {
+            assert!(!is_wiki_url(url), "{url} is not the wiki");
         }
     }
 }
