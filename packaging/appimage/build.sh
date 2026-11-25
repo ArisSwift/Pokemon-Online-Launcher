@@ -65,10 +65,17 @@ chmod 755 "$appdir/AppRun"
 cp packaging/appimage/pokem-online.desktop "$appdir/"
 cp packaging/appimage/pokem-online.desktop "$appdir/usr/share/applications/"
 
-ARCH=x86_64 "$tool" --no-appstream "$appdir" "$out/$name-x86_64.AppImage"
-image="$out/$name-x86_64.AppImage"
-if [ ! -s "$image" ]; then
-  echo "appimagetool did not write $image" >&2
+# Stage beside the target and rename into place. mksquashfs cannot write over an
+# AppImage that is currently running ("Text file busy"), and a rename over it is fine,
+# so packaging works while the launcher is open.
+stage="$out/.stage-$$"
+trap 'rm -rf "$stage"' EXIT
+mkdir -p "$stage"
+ARCH=x86_64 "$tool" --no-appstream "$appdir" "$stage/$name-x86_64.AppImage"
+if [ ! -s "$stage/$name-x86_64.AppImage" ]; then
+  echo "appimagetool did not write the image" >&2
   exit 1
 fi
+image="$out/$name-x86_64.AppImage"
+mv -f "$stage/$name-x86_64.AppImage" "$image"
 echo "wrote $image"

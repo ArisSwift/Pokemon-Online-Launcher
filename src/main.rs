@@ -192,6 +192,34 @@ const PROBE_JS: &str = r##"
     return text || null;
   }
 
+  // The wiki's places table matches a row on a plain substring, so "Goldenrod Poké
+  // Center 1F" finds nothing while "Goldenrod" finds the map. The minimap stacks the
+  // building and the floor under the map name, and innerText keeps those breaks where
+  // textContent glues them into one run, so keep only the part that names a map.
+  function mapName(node) {
+    if (!node) return null;
+    const raw = node.innerText || node.textContent || "";
+    const first = raw.split(/\r?\n/)
+      .map(function (line) { return line.replace(/\s+/g, " ").trim(); })
+      .find(function (line) { return line.length > 0; });
+    if (!first) return null;
+    const head = first.split(/\s+[|\u00b7\u2022\u2014\u2013]\s+/)[0].trim();
+    const trimmed = head
+      .replace(/\s+\d+(?:st|nd|rd|th)\s+floor$/i, "")
+      .replace(/\s+(?:B?\d{1,2}F|F\d{1,2})$/i, "")
+      .trim();
+    return trimmed || null;
+  }
+
+  function mapLines(node) {
+    if (!node) return [];
+    const raw = node.innerText || node.textContent || "";
+    return raw.split(/\r?\n/)
+      .map(function (line) { return line.replace(/\s+/g, " ").trim(); })
+      .filter(function (line) { return line.length > 0; })
+      .slice(0, 4);
+  }
+
   // Where you are, richest first. `#where` names the floor when you are inside a
   // building; outdoors it is empty and `#minimap` holds the town or route name. Both are
   // plain elements in the game's own document.
@@ -230,7 +258,9 @@ const PROBE_JS: &str = r##"
         place: placeText(),
         // The minimap names the map itself, indoors included, which is what the wiki
         // indexes. `place` above is richer but a floor name, so keep both.
-        map: textOf(document.getElementById("minimap")),
+        map: mapName(document.getElementById("minimap")),
+        // Only read when POKEM_DEBUG is on, to see what the minimap really stacks.
+        mapLines: mapLines(document.getElementById("minimap")),
         region: wire.region || null,
         activity: wire.state || null,
         session: !!s
@@ -694,6 +724,56 @@ fn is_game_url(url: &str) -> bool {
     }
 }
 
+/// The wiki's places table keeps a row when its text contains the query, so extra words
+/// turn a match into an empty table. The game stacks a building and a floor under the map
+/// name, and this is the last place to take them off before the URL is built.
+fn place_query(text: &str) -> &str {
+    let mut head = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    for separator in [" · ", " | ", " • ", " — ", " – "] {
+        if let Some((before, _)) = head.split_once(separator) {
+            head = before.trim();
+        }
+    }
+    trim_floor(head)
+}
+
+fn trim_floor(text: &str) -> &str {
+    let lower = text.to_ascii_lowercase();
+    if let Some(at) = lower.rfind(" floor") {
+        let before = &text[..at];
+        let word = before.rsplit(' ').next().unwrap_or("");
+        if is_ordinal(word) {
+            return before[..before.len() - word.len()].trim_end();
+        }
+    }
+    match text.rsplit_once(' ') {
+        Some((before, last)) if is_floor_word(last) => before.trim_end(),
+        _ => text,
+    }
+}
+
+/// `1st`, `2nd`, `3rd`, `4th`, as they appear before the word floor.
+fn is_ordinal(word: &str) -> bool {
+    let digits = word.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let tail = word[digits.len()..].to_ascii_lowercase();
+    !digits.is_empty()
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && matches!(tail.as_str(), "st" | "nd" | "rd" | "th")
+}
+
+/// `1F`, `B2F`, and the lower case the game sometimes uses.
+fn is_floor_word(word: &str) -> bool {
+    let core = word.trim_start_matches(['B', 'b']);
+    let Some(digits) = core.strip_suffix(['F', 'f']) else {
+        return false;
+    };
+    !digits.is_empty() && digits.len() <= 2 && digits.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Percent-encode anything a hash query cannot carry, so a place name cannot smuggle its
 /// own `#` or `&` into the wiki's route.
 fn encode_query(text: &str) -> String {
@@ -716,7 +796,7 @@ fn wiki_url_for(map: Option<&str>, floor: Option<&str>) -> String {
     let wanted = [map, floor]
         .into_iter()
         .flatten()
-        .map(str::trim)
+        .map(place_query)
         .find(|text| !text.is_empty());
     match wanted {
         Some(text) => format!("{WIKI_URL}#/places?q={}", encode_query(text)),
@@ -889,15 +969,24 @@ fn apply_update_notice(version: &str) {
         return;
     }
     let Some(browser) = BROWSER.lock().ok().and_then(|held| held.clone()) else {
+        if debug_echo() {
+            eprintln!("update notice: no browser yet");
+        }
         return;
     };
     let Some(frame) = browser.main_frame() else {
+        if debug_echo() {
+            eprintln!("update notice: no main frame yet");
+        }
         return;
     };
     if frame.is_main() != 1 {
         return;
     }
     NOTICE_SHOWN.store(true, Ordering::SeqCst);
+    if debug_echo() {
+        eprintln!("update notice: injected into the page");
+    }
     let script = CefString::from(update_notice_js(&version).as_str());
     let source = CefString::from(GAME_URL);
     frame.execute_java_script(Some(&script), Some(&source), 0);
@@ -1923,6 +2012,13 @@ wrap_load_handler! {
             if frame.is_main() != 1 {
                 return;
             }
+            // A load always has a live browser behind it, unlike the window creation
+            // callback, so this is the handle the notice task should use.
+            if let Some(browser) = browser.as_ref().map(|held| (*held).clone()) {
+                if let Ok(mut held) = BROWSER.lock() {
+                    *held = Some(browser);
+                }
+            }
             let url = CefString::from(&frame.url()).to_string();
             if !url.starts_with("https://pokem.onl") {
                 return;
@@ -2063,6 +2159,25 @@ mod tests {
     fn a_tag_cannot_carry_anything_but_a_version_into_the_notice() {
         assert_eq!(safe_version("v0.2.0"), "v0.2.0");
         assert_eq!(safe_version("v0.2.0\"><img onerror=x>"), "v0.2.0imgonerrorx");
+    }
+
+    #[test]
+    fn a_floor_is_not_part_of_the_map_name() {
+        assert_eq!(place_query("Goldenrod Poké Center 1F"), "Goldenrod Poké Center");
+        assert_eq!(place_query("Goldenrod Poké Center B1F"), "Goldenrod Poké Center");
+        assert_eq!(place_query("Goldenrod 2nd Floor"), "Goldenrod");
+        assert_eq!(place_query("Mt. Moon 1f"), "Mt. Moon");
+        // Two words that are the name, not a floor.
+        assert_eq!(place_query("Pallet Town"), "Pallet Town");
+        assert_eq!(place_query("Route 30"), "Route 30");
+    }
+
+    #[test]
+    fn only_the_line_that_names_the_map_is_kept() {
+        assert_eq!(place_query("Goldenrod\nPoké Center\n1F"), "Goldenrod");
+        assert_eq!(place_query("Goldenrod City · Poké Center"), "Goldenrod City");
+        assert_eq!(place_query("  \n Goldenrod City \n"), "Goldenrod City");
+        assert!(place_query("   ").is_empty());
     }
 
     #[test]
