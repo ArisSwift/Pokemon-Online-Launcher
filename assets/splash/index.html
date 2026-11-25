@@ -83,24 +83,13 @@
      The launcher shows this by calling window.__pokemShowPill, so a normal launch looks
      exactly as it always did. It reads as white glass, like the disc above it, and
      carries the ink and the accent from the rest of this screen. */
-  .slot { margin-top: 4.2vmin; position: relative; isolation: isolate; }
+  .slot { margin-top: 4.2vmin; }
   .slot[hidden] { display: none; }
 
-  /* Glass needs light behind it, and this screen is one flat red. Two soft blobs, kept
-     behind the pill, are the difference between frosted glass and a white sticker. */
-  .slot::before {
-    content: "";
-    position: absolute;
-    inset: 4% 12%;
-    z-index: -1;
-    pointer-events: none;
-    background:
-      radial-gradient(62% 140% at 26% 38%, rgba(255,255,255,.95), rgba(255,255,255,0) 72%),
-      radial-gradient(110% 70% at 62% 124%, rgba(96,10,4,.5), rgba(96,10,4,0) 72%),
-      radial-gradient(40% 120% at 92% 20%, rgba(42,117,187,.22), rgba(42,117,187,0) 70%);
-    filter: blur(10px);
-  }
-
+  /* Aris's pill, kept as designed. On this screen the fill has nothing behind it but flat
+     red, so the three things that change are the ones flat red breaks: a text shadow deep
+     enough to read, a rim at .38 rather than .28, and the dot in the wordmark's yellow,
+     because a red dot on a red pill cannot be seen. */
   .update-pill {
     --h: clamp(40px, 4.4vmin, 56px);
     --w: calc(var(--h) * 6);
@@ -108,38 +97,23 @@
     display: block;
     height: var(--h);
     width: var(--h);
-    border: 1px solid rgba(255,255,255,.95);
+    border: 1px solid rgba(255,255,255,.38);
     border-radius: 999px;
     overflow: hidden;
     cursor: pointer;
-    color: #2a1310;
+    color: #fff;
     text-decoration: none;
-    background: linear-gradient(135deg, rgba(255,255,255,.55), rgba(255,255,255,.12) 52%, rgba(255,255,255,.26));
-    -webkit-backdrop-filter: blur(22px) saturate(210%);
-            backdrop-filter: blur(22px) saturate(210%);
+    background: linear-gradient(135deg, rgba(255,255,255,.24), rgba(255,255,255,.08));
+    -webkit-backdrop-filter: blur(16px) saturate(170%);
+            backdrop-filter: blur(16px) saturate(170%);
     box-shadow:
-      0 20px 34px -12px rgba(84,10,4,.55),
-      0 3px 8px rgba(84,10,4,.25),
-      inset 0 1px 0 rgba(255,255,255,1),
-      inset 0 -1px 0 rgba(255,255,255,.5),
-      inset 0 0 0 1px rgba(255,255,255,.16);
+      0 10px 28px rgba(0,0,0,.30),
+      inset 0 1px 0 rgba(255,255,255,.5),
+      inset 0 -1px 0 rgba(255,255,255,.08);
     transform: scale(0);
   }
-  /* The wet highlight across the top left, over the glass but under the words. */
-  .update-pill::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    z-index: 0;
-    pointer-events: none;
-    background:
-      linear-gradient(112deg, rgba(255,255,255,.6), rgba(255,255,255,0) 38%),
-      linear-gradient(96deg, rgba(255,255,255,0) 46%, rgba(255,255,255,.28) 56%, rgba(255,255,255,0) 64%),
-      radial-gradient(130% 70% at 88% 128%, rgba(255,255,255,.45), rgba(255,255,255,0) 62%);
-  }
   .update-pill:hover {
-    background: linear-gradient(135deg, rgba(255,255,255,.54), rgba(255,255,255,.20) 52%, rgba(255,255,255,.38));
+    background: linear-gradient(135deg, rgba(255,255,255,.32), rgba(255,255,255,.13));
   }
   .update-pill:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
 
@@ -153,7 +127,6 @@
   /* the content is a fixed width and always centred, so the pill just reveals it */
   .inner {
     position: absolute;
-    z-index: 1;
     top: 0; bottom: 0;
     left: 50%;
     width: var(--w);
@@ -164,10 +137,11 @@
   }
 
   .label {
-    font: 650 calc(var(--h) * .30)/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 700 calc(var(--h) * .305)/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     letter-spacing: .01em;
     white-space: nowrap;
     opacity: 0;
+    text-shadow: 0 1px 2px rgba(56,3,1,.6), 0 0 10px rgba(56,3,1,.3);
   }
   .label.left  { text-align: right; padding-right: calc(var(--h) * .10); }
   .label.right { text-align: left;  padding-left: calc(var(--h) * .10); }
@@ -185,7 +159,7 @@
     width: calc(var(--h) * .45);
     height: calc(var(--h) * .45);
     transform-origin: 50% 12%;
-    filter: drop-shadow(0 1px 1px rgba(0,0,0,.12));
+    filter: drop-shadow(0 1px 2px rgba(56,3,1,.45));
   }
   .play .icon svg { animation: pill-ring .7s ease-in-out 1.35s both; }
 
@@ -196,8 +170,8 @@
     width: calc(var(--h) * .18);
     height: calc(var(--h) * .18);
     border-radius: 50%;
-    background: #ee3b2b;
-    box-shadow: 0 0 0 2px rgba(255,255,255,.95);
+    background: #ffcb05;
+    box-shadow: 0 0 0 2px rgba(255,255,255,.55);
   }
   .play .dot { animation: pill-dot .35s cubic-bezier(.3, 1.6, .5, 1) 1.25s both; }
 
