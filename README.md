@@ -75,6 +75,8 @@ An AppImage in a downloads folder is easy to lose. This copies it into `~/.local
 
 With no argument it uses `dist/pokem-online-x86_64.AppImage`. It prints the three paths it wrote, and the one `rm` line that undoes them.
 
+Every release carries the same script as `install.sh` next to the AppImage, so it can be downloaded without cloning the repository.
+
 ## How it fits together
 
 The window is CEF Views, no UI toolkit. A local splash loads first, then swaps to `https://pokem.onl/` in the same window, so the session survives the change.

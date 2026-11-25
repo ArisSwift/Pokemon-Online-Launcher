@@ -28,11 +28,21 @@ jobs:
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+
       # Each artifact lands in dist/<artifact name>/<archive>.
       - name: Collect the builds
         uses: actions/download-artifact@v4
         with:
           path: dist
+
+      # The menu installer is a script, not a build, so it travels with the release
+      # instead of only living in the repository.
+      - name: Include the Linux installer
+        run: |
+          mkdir -p dist/installer
+          cp packaging/linux/install.sh dist/installer/install.sh
 
       - name: List what will be attached
         run: find dist -type f | sort
@@ -46,7 +56,7 @@ jobs:
           # Artifacts keep whatever path prefix upload-artifact gave them, so find the
           # archives rather than guessing the layout.
           assets="$(find dist -type f \
-            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' \) | sort)"
+            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.sh' \) | sort)"
           echo "$assets"
           if [ -z "$assets" ]; then
             echo "no archives to publish" >&2
