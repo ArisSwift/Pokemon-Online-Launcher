@@ -1,3 +1,11 @@
+// A console subsystem binary gets a black console window behind it on Windows. A
+// release build is a GUI program, so double clicking gives one window and nothing
+// else. A debug build keeps the console, because that is where its messages go.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use cef::*;
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::cell::RefCell;
