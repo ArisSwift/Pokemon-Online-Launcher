@@ -65,6 +65,16 @@ APPIMAGETOOL=/path/to/appimagetool ./packaging/appimage/build.sh
 
 That writes `dist/pokem-online-x86_64.AppImage`. It runs without Chromium's setuid sandbox, because an AppImage mount is nosuid. If `appimagetool` is already on your PATH you can leave the variable off. The release page carries one built by CI, so you only need this if you changed the code.
 
+### Put it in your menu
+
+An AppImage in a downloads folder is easy to lose. This copies it into `~/.local/bin`, lifts the icon out of the image, and writes a menu entry, all inside your home folder with no root:
+
+```sh
+./packaging/linux/install.sh ~/Downloads/pokem-online-x86_64.AppImage
+```
+
+With no argument it uses `dist/pokem-online-x86_64.AppImage`. It prints the three paths it wrote, and the one `rm` line that undoes them.
+
 ## How it fits together
 
 The window is CEF Views, no UI toolkit. A local splash loads first, then swaps to `https://pokem.onl/` in the same window, so the session survives the change.
