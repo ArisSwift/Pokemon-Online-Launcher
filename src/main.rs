@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+mod update;
+
 const APP_ID: &str = "1574411473172561931";
 const APP_NAME: &str = "Pokem Online";
 const GAME_URL: &str = "https://pokem.onl/";
@@ -38,10 +40,12 @@ const CRASH_GAP_MS: u64 = 60_000;
 const CMD_FULLSCREEN: i32 = 1;
 const CMD_RELOAD: i32 = 2;
 const CMD_WIKI: i32 = 3;
-/// F11, F5 and F1 from Chromium's keyboard codes.
+const CMD_MUTE: i32 = 4;
+/// F11, F5, F1 and End from Chromium's keyboard codes.
 const KEY_F11: i32 = 0x7a;
 const KEY_F5: i32 = 0x74;
 const KEY_F1: i32 = 0x70;
+const KEY_END: i32 = 0x23;
 /// The wiki is a separate page on the game's own origin, and it reads its own data.
 const WIKI_URL: &str = "https://pokem.onl/wiki";
 
@@ -73,10 +77,58 @@ static WHERE: Mutex<(Option<String>, Option<String>)> = Mutex::new((None, None))
 /// The page's browser, held so the update task can reach its main frame long after the
 /// network round trip that decided the notice.
 static BROWSER: Mutex<Option<Browser>> = Mutex::new(None);
+/// The wiki's window and browser, kept apart from the game's. It carries a client of its
+/// own, so closing it closes the wiki and nothing else.
+static WIKI_WINDOW: Mutex<Option<Window>> = Mutex::new(None);
+static WIKI_BROWSER: Mutex<Option<Browser>> = Mutex::new(None);
+/// End. Session only: a muted game is not a preference worth remembering.
+static MUTED: AtomicBool = AtomicBool::new(false);
+
+/// Silence or unsilence both of this process's pages. The wiki has no sound of its
+/// own today, but muting it with the game keeps the shortcut honest whichever window
+/// has focus.
+fn toggle_mute() {
+    let muted = !MUTED.load(Ordering::Relaxed);
+    MUTED.store(muted, Ordering::Relaxed);
+    for slot in [&BROWSER, &WIKI_BROWSER] {
+        if let Ok(browser) = slot.lock() {
+            if let Some(browser) = browser.as_ref() {
+                if let Some(host) = browser.host() {
+                    host.set_audio_muted(muted as i32);
+                }
+            }
+        }
+    }
+}
 /// The newest release, kept so a window built after the answer still shows it.
 static UPDATE_READY: Mutex<Option<String>> = Mutex::new(None);
 /// A notice is a heads up, not a nag: it is injected once per run.
 static NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Where the in place update has got to. The pill reads this, so it is a small state
+/// machine rather than a log.
+#[derive(Clone, Debug)]
+enum UpdatePhase {
+    Idle,
+    Downloading(u8),
+    Ready,
+    Failed(String),
+    Unsupported,
+}
+
+static UPDATE_PHASE: Mutex<UpdatePhase> = Mutex::new(UpdatePhase::Idle);
+/// The checked copy waiting to be renamed into place.
+static UPDATE_STAGED: Mutex<Option<update::Target>> = Mutex::new(None);
+/// One download at a time, however many times the pill is clicked.
+static UPDATE_BUSY: AtomicBool = AtomicBool::new(false);
+
+fn set_phase(phase: UpdatePhase) {
+    if let Ok(mut held) = UPDATE_PHASE.lock() {
+        *held = phase;
+    }
+    let mut task = PaintUpdate::new();
+    post_task(ThreadId::UI, Some(&mut task));
+}
 
 wrap_task! {
     struct RaiseWindow {}
@@ -108,6 +160,33 @@ wrap_task! {
     impl Task {
         fn execute(&self) {
             apply_update_notice(&self.version);
+        }
+    }
+}
+
+wrap_task! {
+    struct PaintUpdate {}
+
+    impl Task {
+        fn execute(&self) {
+            paint_update();
+        }
+    }
+}
+
+// POKEM_WIKI opens the wiki on launch. Pressing F1 needs a desktop and a hand; this
+// lets the window be checked from a terminal, alongside POKEM_DEBUG_PORT.
+wrap_task! {
+    struct ShowWiki {
+        url: String,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            if debug_echo() {
+                eprintln!("wiki task: opening {}", self.url);
+            }
+            open_wiki(&self.url);
         }
     }
 }
@@ -977,16 +1056,13 @@ fn apply_update_notice(version: &str) {
             window.set_title(Some(&title));
         }
     }
-    if NOTICE_SHOWN.load(Ordering::SeqCst) {
-        return;
-    }
     let Some(browser) = BROWSER.lock().ok().and_then(|held| held.clone()) else {
         if debug_echo() {
             eprintln!("update notice: no browser yet");
         }
         return;
     };
-    let Some(frame) = browser.main_frame() else {
+    let Some(mut frame) = browser.main_frame() else {
         if debug_echo() {
             eprintln!("update notice: no main frame yet");
         }
@@ -996,22 +1072,363 @@ fn apply_update_notice(version: &str) {
         return;
     }
     let url = CefString::from(&frame.url()).to_string();
-    // The game page keeps its own design, so the pill is a splash thing. An answer that
-    // lands after the splash is gone waits for the next launch, and the title says so in
-    // the meantime.
-    if !is_splash_url(&url) {
-        if debug_echo() {
-            eprintln!("update notice: {version} is waiting for the next splash");
+    if is_splash_url(&url) {
+        if NOTICE_SHOWN.swap(true, Ordering::SeqCst) {
+            return;
         }
+        if debug_echo() {
+            eprintln!("update notice: shown on the splash");
+        }
+        let script = CefString::from(splash_notice_js(&version).as_str());
+        let source = CefString::from(url.as_str());
+        frame.execute_java_script(Some(&script), Some(&source), 0);
+    } else if is_game_url(&url) {
+        // The game keeps its own design; the pill is ours and sits at the bottom of it.
+        let state = update_state_json(&version);
+        ensure_update_pill(&mut frame, &state);
+    }
+}
+
+/// The in game pill. It lives in a shadow root so the game's own styles cannot reach it,
+/// and it only exists when a newer build is known.
+/// The in game pill. It is the splash's pill, unchanged: the same white glass, the same
+/// bell, the same yellow dot. It lives in a shadow root so the game's own styles cannot
+/// reach it, and it sits at the bottom of the screen over the game.
+const UPDATE_PILL_JS: &str = r##"
+(function () {
+  if (window.__pokemPill) return;
+  window.__pokemPill = true;
+  var host = document.createElement("div");
+  host.id = "pokem-update";
+  host.style.cssText = "position:fixed;left:50%;top:18px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;";
+  var root = host.attachShadow({ mode: "open" });
+  root.innerHTML = [
+    "<style>",
+    ":host{all:initial}",
+    ".pill{--h:clamp(40px,4.4vmin,56px);--w:calc(var(--h)*6);pointer-events:auto;position:relative;display:block;height:var(--h);width:var(--h);transform:scale(0);border:1px solid rgba(255,255,255,.38);border-radius:999px;overflow:hidden;cursor:pointer;color:#fff;text-decoration:none;background:linear-gradient(135deg,rgba(255,255,255,.24),rgba(255,255,255,.08));-webkit-backdrop-filter:blur(16px) saturate(170%);backdrop-filter:blur(16px) saturate(170%);box-shadow:0 10px 28px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.5),inset 0 -1px 0 rgba(255,255,255,.08)}",
+    ".pill:hover{background:linear-gradient(135deg,rgba(255,255,255,.32),rgba(255,255,255,.13))}",
+    ".pill:focus-visible{outline:3px solid #fff;outline-offset:3px}",
+    ".pill.play{animation:pill-pop .7s ease-in-out both,pill-stretch .85s cubic-bezier(.22,1.15,.36,1) .62s both}",
+    ".inner{position:absolute;top:0;bottom:0;left:50%;width:var(--w);transform:translateX(-50%);display:grid;grid-template-columns:1fr var(--h) 1fr;align-items:center}",
+    ".label{font:700 calc(var(--h)*.305)/1 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;letter-spacing:.01em;white-space:nowrap;opacity:0;text-shadow:0 1px 2px rgba(56,3,1,.6),0 0 10px rgba(56,3,1,.3)}",
+    ".label.left{text-align:right;padding-right:calc(var(--h)*.10)}",
+    ".label.right{text-align:left;padding-left:calc(var(--h)*.10)}",
+    ".play .label.left{animation:from-right .45s ease-out .85s both}",
+    ".play .label.right{animation:from-left .45s ease-out .85s both}",
+    ".icon{position:relative;display:grid;place-items:center;height:var(--h)}",
+    ".icon svg{width:calc(var(--h)*.45);height:calc(var(--h)*.45);filter:drop-shadow(0 1px 2px rgba(56,3,1,.45))}",
+    ".play .icon svg{animation:pill-ring .7s ease-in-out 1.35s both}",
+    ".dot{position:absolute;top:calc(var(--h)*.25);right:calc(var(--h)*.25);width:calc(var(--h)*.18);height:calc(var(--h)*.18);border-radius:50%;background:#ffcb05;box-shadow:0 0 0 2px rgba(255,255,255,.55)}",
+    ".play .dot{animation:pill-dot .35s cubic-bezier(.3,1.6,.5,1) 1.25s both}",
+    ".bar{position:absolute;left:0;bottom:0;height:3px;width:0;border-radius:0 3px 3px 0;background:linear-gradient(90deg,rgba(255,203,5,.42),rgba(255,203,5,.88));box-shadow:0 0 10px rgba(255,203,5,.45),inset 0 1px 0 rgba(255,255,255,.55);transition:width .25s ease}",
+    "@keyframes pill-pop{0%{transform:scale(0)}50%{transform:scale(1.22)}75%{transform:scale(.93)}100%{transform:scale(1)}}",
+    "@keyframes pill-stretch{from{width:var(--h)}to{width:var(--w)}}",
+    "@keyframes from-right{from{opacity:0;transform:translateX(14px)}to{opacity:1;transform:none}}",
+    "@keyframes from-left{from{opacity:0;transform:translateX(-14px)}to{opacity:1;transform:none}}",
+    "@keyframes pill-ring{0%,100%{transform:rotate(0)}20%{transform:rotate(16deg)}40%{transform:rotate(-13deg)}60%{transform:rotate(8deg)}80%{transform:rotate(-4deg)}}",
+    "@keyframes pill-dot{from{transform:scale(0)}to{transform:scale(1)}}",
+    "@media (prefers-reduced-motion:reduce){.pill,.pill.play{animation:none;transform:none;width:var(--w)}.label{opacity:1;animation:none!important}.play .icon svg,.play .dot{animation:none}.bar{transition:none}}",
+    "</style>",
+    '<a class="pill" role="button" tabindex="0" aria-live="polite">',
+    '<span class="inner">',
+    '<span class="label left">Update</span>',
+    '<span class="icon">',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">',
+    '<path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9z"/>',
+    '<path d="M10 20a2 2 0 0 0 4 0"/>',
+    "</svg>",
+    '<span class="dot"></span>',
+    "</span>",
+    '<span class="label right">Available</span>',
+    "</span>",
+    '<span class="bar"></span>',
+    "</a>"
+  ].join("");
+  document.documentElement.appendChild(host);
+  var pill = root.querySelector(".pill");
+  // The splash's entrance: the circle pops, then stretches out and the words arrive.
+  void pill.offsetWidth;
+  pill.classList.add("play");
+  var bar = root.querySelector(".bar");
+  var right = root.querySelector(".label.right");
+  var state = "available";
+  var version = "";
+  var release = "";
+
+  function send(cmd) {
+    console.log("PO " + JSON.stringify({ cmd: cmd }));
+  }
+
+  function paint(next) {
+    if (!next) return;
+    if (next.state) state = next.state;
+    if (next.version) version = next.version;
+    if (next.release) release = next.release;
+    if (state === "available") {
+      right.textContent = version || "Available";
+      bar.style.width = "0";
+      pill.title = "Launcher " + version + " is available";
+      pill.setAttribute("aria-label", "Update the launcher to " + version);
+    } else if (state === "downloading") {
+      right.textContent = (next.percent || 0) + "%";
+      bar.style.width = (next.percent || 0) + "%";
+      pill.title = "Downloading launcher " + version;
+      pill.setAttribute("aria-label", "Downloading update, " + (next.percent || 0) + " percent");
+    } else if (state === "ready") {
+      right.textContent = "Restart";
+      bar.style.width = "100%";
+      pill.title = "Launcher " + version + " is ready";
+      pill.setAttribute("aria-label", "Restart to finish the update");
+    } else if (state === "failed") {
+      right.textContent = "Retry";
+      bar.style.width = "0";
+      pill.title = next.detail || "The update did not finish";
+      pill.setAttribute("aria-label", "Update failed, try again");
+    } else if (state === "unsupported") {
+      right.textContent = "GitHub";
+      bar.style.width = "0";
+      pill.title = "This copy cannot update itself";
+      pill.setAttribute("aria-label", "Open the release page");
+    }
+  }
+
+  window.__pokemUpdate = paint;
+  if (window.__pokemUpdateState) paint(window.__pokemUpdateState);
+
+  pill.addEventListener("click", function () {
+    if (state === "available" || state === "failed" || state === "downloading") {
+      send("update");
+    } else if (state === "ready") {
+      send("restart");
+    } else if (state === "unsupported") {
+      window.open(release || "https://github.com/ArisSwift/Pokemon-Online-Launcher/releases/latest", "_blank", "noreferrer");
+    }
+  });
+  pill.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      pill.click();
+    }
+  });
+})();
+"##;
+
+fn update_state_json(version: &str) -> String {
+    let phase = UPDATE_PHASE
+        .lock()
+        .map(|held| held.clone())
+        .unwrap_or(UpdatePhase::Idle);
+    let (state, percent, detail) = match phase {
+        UpdatePhase::Idle => ("available", 0, String::new()),
+        UpdatePhase::Downloading(percent) => ("downloading", percent, String::new()),
+        UpdatePhase::Ready => ("ready", 100, String::new()),
+        UpdatePhase::Failed(reason) => ("failed", 0, reason),
+        UpdatePhase::Unsupported => ("unsupported", 0, String::new()),
+    };
+    serde_json::json!({
+        "state": state,
+        "percent": percent,
+        "version": safe_version(version),
+        "detail": detail,
+        "release": RELEASE_PAGE,
+    })
+    .to_string()
+}
+
+/// Put the pill into the game page and tell it where things stand. Both scripts are
+/// queued in order, so the pill exists before the first paint.
+fn ensure_update_pill(frame: &mut Frame, state: &str) {
+    let url = CefString::from(&frame.url()).to_string();
+    let source = CefString::from(url.as_str());
+    let seed = CefString::from(format!("window.__pokemUpdateState = {state};").as_str());
+    frame.execute_java_script(Some(&seed), Some(&source), 0);
+    let pill = CefString::from(UPDATE_PILL_JS);
+    frame.execute_java_script(Some(&pill), Some(&source), 0);
+    let paint = CefString::from(
+        format!("window.__pokemUpdate && window.__pokemUpdate({state});").as_str(),
+    );
+    frame.execute_java_script(Some(&paint), Some(&source), 0);
+}
+
+fn paint_update() {
+    let Some(version) = UPDATE_READY.lock().ok().and_then(|held| held.clone()) else {
+        return;
+    };
+    let Some(browser) = BROWSER.lock().ok().and_then(|held| held.clone()) else {
+        return;
+    };
+    let Some(mut frame) = browser.main_frame() else { return };
+    let url = CefString::from(&frame.url()).to_string();
+    let state = update_state_json(&version);
+    if is_splash_url(&url) {
+        let script = CefString::from(
+            format!("window.__pokemUpdate && window.__pokemUpdate({state});").as_str(),
+        );
+        let source = CefString::from(url.as_str());
+        frame.execute_java_script(Some(&script), Some(&source), 0);
+    } else if is_game_url(&url) {
+        ensure_update_pill(&mut frame, &state);
+    }
+}
+
+enum UpdateError {
+    Unsupported,
+    Failed(String),
+}
+
+/// Download and check the newer build, then leave it staged. Nothing is renamed until
+/// the game is closing or the player asks for the restart, so the running copy is never
+/// touched while a renderer might still be started from it.
+fn download_update() -> Result<update::Target, UpdateError> {
+    let target = update::target().ok_or(UpdateError::Unsupported)?;
+    let progress = |percent: u8| set_phase(UpdatePhase::Downloading(percent));
+
+    // A local file stands in for the network, so the whole path can be exercised
+    // without spending data.
+    if let Some(source) = std::env::var_os("POKEM_UPDATE_FILE") {
+        update::copy(&std::path::PathBuf::from(source), &target.part, &progress)
+            .map_err(UpdateError::Failed)?;
+        update::unpack(&target).map_err(UpdateError::Failed)?;
+        return Ok(target);
+    }
+
+    let release = update::fetch_release(RELEASE_API)
+        .ok_or_else(|| UpdateError::Failed("the release list could not be read".to_owned()))?;
+    let asset = release
+        .asset(target.asset)
+        .ok_or_else(|| UpdateError::Failed(format!("{} is not in the release", target.asset)))?;
+    if debug_echo() {
+        eprintln!("update: {} offers {} ({} bytes)", release.tag, asset.name, asset.size);
+    }
+    let checksums = release
+        .asset("SHA256SUMS")
+        .ok_or_else(|| UpdateError::Failed("the release has no SHA256SUMS".to_owned()))?;
+    let text = update::fetch_text(&checksums.url)
+        .ok_or_else(|| UpdateError::Failed("SHA256SUMS could not be read".to_owned()))?;
+    let expected = update::parse_checksums(&text, target.asset)
+        .ok_or_else(|| UpdateError::Failed("no checksum for this build".to_owned()))?;
+
+    update::download(&asset.url, &target.part, asset.size, &progress)
+        .map_err(UpdateError::Failed)?;
+    let actual = update::sha256_file(&target.part)
+        .map(|bytes| update::hex(&bytes))
+        .map_err(|error| UpdateError::Failed(error.to_string()))?;
+    if actual != expected {
+        let _ = std::fs::remove_file(&target.part);
+        return Err(UpdateError::Failed(
+            "the download did not match its checksum".to_owned(),
+        ));
+    }
+    update::record_hash(&target, &expected);
+    update::unpack(&target).map_err(UpdateError::Failed)?;
+    Ok(target)
+}
+
+fn start_update() {
+    let known = UPDATE_READY.lock().map(|held| held.is_some()).unwrap_or(false);
+    if !known {
         return;
     }
-    NOTICE_SHOWN.store(true, Ordering::SeqCst);
-    if debug_echo() {
-        eprintln!("update notice: shown on the splash");
+    if UPDATE_BUSY.swap(true, Ordering::SeqCst) {
+        return;
     }
-    let script = CefString::from(splash_notice_js(&version).as_str());
-    let source = CefString::from(url.as_str());
-    frame.execute_java_script(Some(&script), Some(&source), 0);
+    set_phase(UpdatePhase::Downloading(0));
+    std::thread::spawn(move || {
+        match download_update() {
+            Ok(target) => {
+                if let Ok(mut held) = UPDATE_STAGED.lock() {
+                    *held = Some(target);
+                }
+                set_phase(UpdatePhase::Ready);
+            }
+            Err(UpdateError::Unsupported) => set_phase(UpdatePhase::Unsupported),
+            Err(UpdateError::Failed(message)) => {
+                if debug_echo() {
+                    eprintln!("update failed: {message}");
+                }
+                set_phase(UpdatePhase::Failed(message));
+            }
+        }
+        UPDATE_BUSY.store(false, Ordering::SeqCst);
+    });
+}
+
+fn restart_now() {
+    let Some(target) = UPDATE_STAGED.lock().ok().and_then(|held| held.clone()) else {
+        return;
+    };
+    // A second click after a swap that already landed has nothing to move; it only needs
+    // the window to close so the new build can start.
+    if target.staging.exists() {
+        if let Err(error) = update::install(&target) {
+            if debug_echo() {
+                eprintln!("update install failed: {error}");
+            }
+            set_phase(UpdatePhase::Failed(error));
+            return;
+        }
+        update::mark_backup(&target);
+    }
+    if let Err(error) = update::spawn(&target) {
+        if debug_echo() {
+            eprintln!("could not start the new build: {error}");
+        }
+        set_phase(UpdatePhase::Failed(error));
+        return;
+    }
+    // Quitting the message loop from inside a console callback leaves CEF running here.
+    // Closing the game window does work: its own client ends the loop on the way out.
+    let closed = BROWSER
+        .lock()
+        .ok()
+        .and_then(|held| held.clone())
+        .and_then(|browser| browser.host())
+        .map(|host| host.try_close_browser())
+        .unwrap_or(0);
+    if closed == 0 {
+        if debug_echo() {
+            eprintln!("the window did not close, quitting the loop instead");
+        }
+        quit_message_loop();
+    }
+}
+
+/// A checked copy that was left behind by a quit still belongs on disk. The next start
+/// puts it in place before CEF loads anything.
+fn install_on_quit() {
+    let Some(target) = UPDATE_STAGED.lock().ok().and_then(|held| held.clone()) else {
+        return;
+    };
+    if update::install(&target).is_ok() {
+        update::mark_backup(&target);
+    }
+}
+
+fn startup_update() {
+    let Some(target) = update::target() else { return };
+    update::finish_previous(&target);
+    if !target.staging.exists() {
+        return;
+    }
+    let staged_ok = if target.kind == update::Kind::AppImage {
+        match update::staged_hash(&target) {
+            Some(expected) => update::sha256_file(&target.staging)
+                .map(|bytes| update::hex(&bytes) == expected)
+                .unwrap_or(false),
+            None => true,
+        }
+    } else {
+        true
+    };
+    if staged_ok && update::install(&target).is_ok() {
+        update::mark_backup(&target);
+        if debug_echo() {
+            eprintln!("installed the staged update on start");
+        }
+    } else {
+        update::remove_any(&target.staging);
+        let _ = std::fs::remove_file(update::with_suffix(&target.staging, ".sha256"));
+    }
 }
 
 fn main() {
@@ -1065,6 +1482,17 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
     // One window, one profile. A second launch asks the running instance to come forward
     // and stops here, before CEF is initialized, so two builds cannot share a profile.
     let mut instance = one_instance::acquire(&instance_socket());
+    // A restart after an update starts while the old process is still letting go of the
+    // socket. Give it a few seconds instead of mistaking it for a second copy.
+    if instance.is_none() && std::env::var_os("POKEM_WAIT_INSTANCE").is_some() {
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(200));
+            instance = one_instance::acquire(&instance_socket());
+            if instance.is_some() {
+                break;
+            }
+        }
+    }
     if instance.is_none() {
         eprintln!("pokem-online is already running, bringing it to the front");
         return;
@@ -1075,6 +1503,10 @@ fn run_main(main_args: &MainArgs, cmd_line: &CommandLine) {
         return;
     }
     clear_stale_singleton(&cache);
+
+    // A checked copy from the last session goes in before CEF starts, so a quit that
+    // was cut short still lands the update.
+    startup_update();
 
     spawn_presence();
 
@@ -1375,6 +1807,95 @@ fn keep_shape(window: &mut Window) {
     let _ = std::fs::write(shape_file(), text);
 }
 
+/// The wiki window's shape, kept in its own file so it never fights the game's.
+struct WikiShape {
+    width: i32,
+    height: i32,
+    x: i32,
+    y: i32,
+    /// False until the window has been placed once, so the first open centres itself
+    /// instead of landing in a corner.
+    placed: bool,
+    maximized: bool,
+}
+
+impl Default for WikiShape {
+    fn default() -> Self {
+        Self {
+            width: 900,
+            height: 900,
+            x: 0,
+            y: 0,
+            placed: false,
+            maximized: false,
+        }
+    }
+}
+
+fn wiki_shape_file() -> std::path::PathBuf {
+    std::path::PathBuf::from(cache_dir()).join("wiki-window.json")
+}
+
+fn read_wiki_shape() -> WikiShape {
+    let mut shape = WikiShape::default();
+    let Ok(text) = std::fs::read_to_string(wiki_shape_file()) else {
+        return shape;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return shape;
+    };
+    let number = |key: &str| value.get(key).and_then(serde_json::Value::as_i64);
+    if let Some(width) = number("width") {
+        shape.width = (width as i32).clamp(480, 10_000);
+    }
+    if let Some(height) = number("height") {
+        shape.height = (height as i32).clamp(400, 10_000);
+    }
+    if let (Some(x), Some(y)) = (number("x"), number("y")) {
+        // Wayland does not tell a client where it was placed, so a saved 0,0 is the
+        // compositor's business, not a position to restore.
+        if x != 0 || y != 0 {
+            shape.x = x as i32;
+            shape.y = y as i32;
+            shape.placed = true;
+        }
+    }
+    shape.maximized = value
+        .get("maximized")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    shape
+}
+
+/// A maximised window reports the maximised bounds, so keep the last normal size and
+/// only record the flag while it is maximised.
+fn keep_wiki_shape(window: &mut Window) {
+    let mut shape = read_wiki_shape();
+    shape.maximized = window.is_maximized() == 1;
+    if !shape.maximized {
+        let bounds = window.bounds();
+        shape.width = bounds.width.clamp(480, 10_000);
+        shape.height = bounds.height.clamp(400, 10_000);
+        // Only a position the window actually has is worth keeping. On Wayland the
+        // client never learns where the compositor put it, so it reads back as 0,0.
+        if bounds.x != 0 || bounds.y != 0 {
+            shape.x = bounds.x;
+            shape.y = bounds.y;
+            shape.placed = true;
+        }
+    }
+    let mut value = serde_json::json!({
+        "width": shape.width,
+        "height": shape.height,
+        "maximized": shape.maximized,
+    });
+    if shape.placed {
+        value["x"] = serde_json::json!(shape.x);
+        value["y"] = serde_json::json!(shape.y);
+    }
+    let _ = std::fs::write(wiki_shape_file(), value.to_string());
+}
+
 /// The game names its maps `world:<slug>` where the slug is the area itself, so the
 /// region has to come from the slug. Route numbers are unique across generations, so
 /// those are exact; towns are matched by name.
@@ -1581,7 +2102,7 @@ fn spawn_presence() {
                         .large_image("logo")
                         .large_text(large_text),
                 )
-                .buttons(vec![activity::Button::new("Play", GAME_URL)]);
+                .buttons(vec![activity::Button::new("Join", RELEASE_PAGE)]);
 
             // A dropped socket (Discord restarting) shows up here; reconnect on the next
             // snapshot rather than spinning.
@@ -1646,6 +2167,16 @@ wrap_browser_process_handler! {
                 true,
             );
             window_create_top_level(Some(&mut window_delegate));
+
+            // POKEM_WIKI opens the wiki beside the game, so the second window can be
+            // checked from a terminal instead of by pressing F1.
+            if std::env::var_os("POKEM_WIKI").is_some() {
+                if debug_echo() {
+                    eprintln!("POKEM_WIKI set, queueing the wiki window");
+                }
+                let mut task = ShowWiki::new(WIKI_URL.to_string());
+                post_task(ThreadId::UI, Some(&mut task));
+            }
         }
     }
 }
@@ -1694,6 +2225,8 @@ wrap_window_delegate! {
             window.set_accelerator(CMD_RELOAD, KEY_F5, 0, 0, 0, 1);
             // F1 is free in the game, so it carries the wiki.
             window.set_accelerator(CMD_WIKI, KEY_F1, 0, 0, 0, 1);
+            // End, because M opens the map and Ctrl+M is easy to miss mid fight.
+            window.set_accelerator(CMD_MUTE, KEY_END, 0, 0, 0, 1);
             if let Some(browser) = browser_view.browser() {
                 if let Ok(mut held) = BROWSER.lock() {
                     *held = Some(browser);
@@ -1751,9 +2284,14 @@ wrap_window_delegate! {
                     1
                 }
                 CMD_WIKI => {
-                    // In the player's own browser, so the game keeps running behind it.
+                    // Its own window, in this process, so it opens at once and the game
+                    // keeps running behind it.
                     let (map, floor) = WHERE.lock().map(|held| held.clone()).unwrap_or((None, None));
-                    open_external(&wiki_url_for(map.as_deref(), floor.as_deref()));
+                    open_wiki(&wiki_url_for(map.as_deref(), floor.as_deref()));
+                    1
+                }
+                CMD_MUTE => {
+                    toggle_mute();
                     1
                 }
                 _ => 0,
@@ -1823,6 +2361,326 @@ wrap_browser_view_delegate! {
     }
 }
 
+/// Open the wiki in a window of its own. It runs in this process, so it costs a fraction
+/// of a second instead of starting the player's browser, and the game keeps running
+/// behind it.
+fn open_wiki(url: &str) {
+    if debug_echo() {
+        eprintln!("open_wiki: {url}");
+    }
+    // Already open: bring it forward and point it at the map you are on now.
+    let existing = match WIKI_WINDOW.lock() {
+        Ok(mut held) => {
+            // A window the compositor closed without telling us is not worth showing.
+            if held.as_ref().map(|window| window.is_closed() != 0).unwrap_or(false) {
+                *held = None;
+                if let Ok(mut browser) = WIKI_BROWSER.lock() {
+                    *browser = None;
+                }
+            }
+            held.clone()
+        }
+        Err(_) => None,
+    };
+    if let Some(window) = existing {
+        if let Ok(browser) = WIKI_BROWSER.lock() {
+            if let Some(browser) = browser.as_ref() {
+                if let Some(frame) = browser.main_frame() {
+                    let url = CefString::from(url);
+                    frame.load_url(Some(&url));
+                }
+            }
+        }
+        window.show();
+        window.activate();
+        window.bring_to_top();
+        return;
+    }
+
+    let mut client = WikiClient::new();
+    let mut settings = BrowserSettings::default();
+    settings.background_color = 0xff_ff_ff_ff;
+    settings.chrome_status_bubble = State::DISABLED;
+    let url = CefString::from(url);
+    let mut view_delegate = WikiBrowserViewDelegate::new(RuntimeStyle::DEFAULT);
+    let browser_view = browser_view_create(
+        Some(&mut client),
+        Some(&url),
+        Some(&settings),
+        None,
+        None,
+        Some(&mut view_delegate),
+    );
+    let mut window_delegate =
+        WikiWindowDelegate::new(RefCell::new(browser_view), RuntimeStyle::DEFAULT);
+    window_create_top_level(Some(&mut window_delegate));
+}
+
+wrap_browser_view_delegate! {
+    struct WikiBrowserViewDelegate {
+        runtime_style: RuntimeStyle,
+    }
+
+    impl ViewDelegate {
+        fn preferred_size(&self, _view: Option<&mut View>) -> Size {
+            let shape = read_wiki_shape();
+            Size {
+                width: shape.width,
+                height: shape.height,
+            }
+        }
+    }
+
+    impl BrowserViewDelegate {
+        fn browser_runtime_style(&self) -> RuntimeStyle {
+            self.runtime_style
+        }
+    }
+}
+
+wrap_window_delegate! {
+    struct WikiWindowDelegate {
+        browser_view: RefCell<Option<BrowserView>>,
+        runtime_style: RuntimeStyle,
+    }
+
+    impl ViewDelegate {}
+
+    impl PanelDelegate {}
+
+    impl WindowDelegate {
+        fn on_window_created(&self, window: Option<&mut Window>) {
+            let browser_view = self.browser_view.borrow();
+            let (Some(window), Some(browser_view)) = (window, browser_view.as_ref()) else {
+                return;
+            };
+            window.set_to_fill_layout();
+            let mut view = View::from(browser_view);
+            window.add_child_view(Some(&mut view));
+            let title = CefString::from("Pokem Online · Wiki");
+            window.set_title(Some(&title));
+            if let Some(mut icon) = load_icon() {
+                window.set_window_icon(Some(&mut icon));
+                window.set_window_app_icon(Some(&mut icon));
+            }
+            window.set_accelerator(CMD_FULLSCREEN, KEY_F11, 0, 0, 0, 1);
+            window.set_accelerator(CMD_RELOAD, KEY_F5, 0, 0, 0, 1);
+            // The game is usually playing behind the wiki, so mute works here too.
+            window.set_accelerator(CMD_MUTE, KEY_END, 0, 0, 0, 1);
+
+            // Where he left it last time, or centred the first time. A maximised window
+            // takes its own bounds, so leave those alone.
+            let shape = read_wiki_shape();
+            if !shape.maximized {
+                if shape.placed {
+                    window.set_bounds(Some(&Rect {
+                        x: shape.x,
+                        y: shape.y,
+                        width: shape.width,
+                        height: shape.height,
+                    }));
+                } else {
+                    window.center_window(Some(&Size {
+                        width: shape.width,
+                        height: shape.height,
+                    }));
+                }
+            }
+
+            if let Some(browser) = browser_view.browser() {
+                if let Ok(mut held) = WIKI_BROWSER.lock() {
+                    *held = Some(browser);
+                }
+            }
+            if let Ok(mut held) = WIKI_WINDOW.lock() {
+                *held = Some(window.clone());
+            }
+            window.show();
+            window.activate();
+        }
+
+        fn on_window_closing(&self, window: Option<&mut Window>) {
+            if let Some(window) = window {
+                keep_wiki_shape(window);
+            }
+        }
+
+        fn on_window_destroyed(&self, _window: Option<&mut Window>) {
+            *self.browser_view.borrow_mut() = None;
+            if let Ok(mut held) = WIKI_WINDOW.lock() {
+                *held = None;
+            }
+            if let Ok(mut held) = WIKI_BROWSER.lock() {
+                *held = None;
+            }
+        }
+
+        fn on_accelerator(&self, window: Option<&mut Window>, command_id: i32) -> i32 {
+            let Some(window) = window else { return 0 };
+            match command_id {
+                CMD_FULLSCREEN => {
+                    let fullscreen = window.is_fullscreen() == 1;
+                    window.set_fullscreen((!fullscreen) as i32);
+                    1
+                }
+                CMD_RELOAD => {
+                    if let Some(browser_view) = self.browser_view.borrow().as_ref() {
+                        if let Some(browser) = browser_view.browser() {
+                            browser.reload();
+                        }
+                    }
+                    1
+                }
+                CMD_MUTE => {
+                    toggle_mute();
+                    1
+                }
+                _ => 0,
+            }
+        }
+
+        fn can_resize(&self, _window: Option<&mut Window>) -> i32 {
+            1
+        }
+
+        fn can_maximize(&self, _window: Option<&mut Window>) -> i32 {
+            1
+        }
+
+        fn can_minimize(&self, _window: Option<&mut Window>) -> i32 {
+            1
+        }
+
+        fn can_close(&self, _window: Option<&mut Window>) -> i32 {
+            1
+        }
+
+        fn initial_show_state(&self, _window: Option<&mut Window>) -> ShowState {
+            if read_wiki_shape().maximized {
+                ShowState::MAXIMIZED
+            } else {
+                ShowState::NORMAL
+            }
+        }
+
+        fn window_runtime_style(&self) -> RuntimeStyle {
+            self.runtime_style
+        }
+    }
+}
+
+wrap_life_span_handler! {
+    struct WikiLifeSpanHandler {}
+
+    impl LifeSpanHandler {
+        fn on_before_popup(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _popup_id: i32,
+            target_url: Option<&CefString>,
+            _target_frame_name: Option<&CefString>,
+            _target_disposition: WindowOpenDisposition,
+            _user_gesture: i32,
+            _popup_features: Option<&PopupFeatures>,
+            _window_info: Option<&mut WindowInfo>,
+            _client: Option<&mut Option<Client>>,
+            _settings: Option<&mut BrowserSettings>,
+            _extra_info: Option<&mut Option<DictionaryValue>>,
+            _no_javascript_access: Option<&mut i32>,
+        ) -> i32 {
+            let Some(url) = target_url else { return 0 };
+            open_external(&url.to_string());
+            1
+        }
+        // No on_before_close: closing the wiki leaves the game running. The game's own
+        // handler is what quits the message loop.
+    }
+}
+
+wrap_request_handler! {
+    struct WikiRequestHandler {}
+
+    impl RequestHandler {
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _user_gesture: i32,
+            _is_redirect: i32,
+        ) -> i32 {
+            let (Some(frame), Some(request)) = (frame, request) else {
+                return 0;
+            };
+            if frame.is_main() != 1 {
+                return 0;
+            }
+            let url = CefString::from(&request.url()).to_string();
+            // The wiki is the only thing this window shows. The game and the rest of
+            // the web belong to the player's browser.
+            if is_wiki_url(&url) {
+                return 0;
+            }
+            if url.starts_with("https://") || url.starts_with("http://") {
+                open_external(&url);
+                return 1;
+            }
+            0
+        }
+
+        fn on_open_urlfrom_tab(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            target_url: Option<&CefString>,
+            _target_disposition: WindowOpenDisposition,
+            _user_gesture: i32,
+        ) -> i32 {
+            let Some(url) = target_url else { return 0 };
+            open_external(&url.to_string());
+            1
+        }
+    }
+}
+
+wrap_display_handler! {
+    struct WikiDisplayHandler {}
+
+    impl DisplayHandler {
+        fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
+            // The window names itself, so the taskbar can tell it from the game.
+            let page = title.map(|text| text.to_string()).unwrap_or_default();
+            let page = page.trim().to_owned();
+            let label = if page.is_empty() { "Wiki".to_owned() } else { page };
+            let full = CefString::from(format!("{label} · Pokem Online").as_str());
+            if let Ok(held) = WIKI_WINDOW.lock() {
+                if let Some(window) = held.as_ref() {
+                    window.set_title(Some(&full));
+                }
+            }
+        }
+    }
+}
+
+wrap_client! {
+    struct WikiClient {}
+
+    impl Client {
+        fn life_span_handler(&self) -> Option<LifeSpanHandler> {
+            Some(WikiLifeSpanHandler::new())
+        }
+
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(WikiRequestHandler::new())
+        }
+
+        fn display_handler(&self) -> Option<DisplayHandler> {
+            Some(WikiDisplayHandler::new())
+        }
+    }
+}
+
 wrap_client! {
     struct LauncherClient {}
 
@@ -1887,7 +2745,11 @@ wrap_request_handler! {
             }
             let url = CefString::from(&request.url()).to_string();
             if is_wiki_url(&url) {
-                open_external(&url);
+                // The wiki gets its own window, in this process, instead of the player's
+                // browser. Posted rather than built here: a top-level window is not
+                // something to create inside a navigation callback.
+                let mut task = ShowWiki::new(url);
+                post_task(ThreadId::UI, Some(&mut task));
                 return 1;
             }
             if is_game_url(&url) || is_launcher_page(&url) {
@@ -1956,6 +2818,16 @@ wrap_display_handler! {
             }
             if payload.starts_with('{') {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+                    // The pill speaks the same `PO` channel as presence: a click is a
+                    // small command, not a state report.
+                    if let Some(cmd) = value.get("cmd").and_then(|field| field.as_str()) {
+                        match cmd {
+                            "update" => start_update(),
+                            "restart" => restart_now(),
+                            _ => {}
+                        }
+                        return 0;
+                    }
                     let field = |name: &str| {
                         value
                             .get(name)
@@ -2023,6 +2895,12 @@ wrap_load_handler! {
                 FILES_HELP_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
             );
             frame.execute_java_script(Some(&files_help), Some(&script_url), 0);
+
+            // The check may land after the splash is gone, and a reload brings the page
+            // back without the pill, so the game page asks for it again here.
+            if let Some(version) = UPDATE_READY.lock().ok().and_then(|held| held.clone()) {
+                apply_update_notice(&version);
+            }
 
             // A console that runs in the page, for testing the site's own API with the
             // session the page already has. Devtools is a second window, so it exists only
@@ -2092,6 +2970,9 @@ wrap_life_span_handler! {
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             CLOSING.store(true, Ordering::Relaxed);
+            // A checked update is renamed into place now. The running image keeps its
+            // own inode, so this is the moment that costs nothing.
+            install_on_quit();
             quit_message_loop();
         }
     }

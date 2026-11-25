@@ -296,6 +296,32 @@
     return Promise.all(running.map((a) => a.finished.catch(() => {})));
   }
 
+  // The pill is the update's own button: a click asks the launcher to fetch the new
+  // build, and the label follows the download. The link stays as the fallback for a
+  // copy that cannot update itself.
+  let pillState = "available";
+  pill.addEventListener("click", function (event) {
+    if (pillState === "unsupported") return;
+    event.preventDefault();
+    console.log("PO " + JSON.stringify({ cmd: pillState === "ready" ? "restart" : "update" }));
+  });
+
+  window.__pokemUpdate = function (state) {
+    if (!state) return;
+    if (state.state) pillState = state.state;
+    if (pillState === "available") {
+      versionSlot.textContent = state.version || versionSlot.textContent;
+    } else if (pillState === "downloading") {
+      versionSlot.textContent = (state.percent || 0) + "%";
+    } else if (pillState === "ready") {
+      versionSlot.textContent = "Restart";
+    } else if (pillState === "failed") {
+      versionSlot.textContent = "Retry";
+    } else if (pillState === "unsupported") {
+      versionSlot.textContent = state.version || "GitHub";
+    }
+  };
+
   // Called by the launcher, with the version and the release page, only when a newer
   // build exists. Everything else about this screen stays the same.
   window.__pokemShowPill = function (version, release) {

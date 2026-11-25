@@ -44,6 +44,20 @@ jobs:
           mkdir -p dist/installer
           cp packaging/linux/install.sh dist/installer/install.sh
 
+      # The launcher checks what it downloaded against this list before it renames
+      # anything. Basenames only: the updater knows the asset by name, not by the path
+      # the artifact happened to keep.
+      - name: Checksums
+        run: |
+          set -eu
+          : > dist/SHA256SUMS
+          find dist -type f \
+            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.sh' \) \
+            | sort | while read -r file; do
+                ( cd "$(dirname "$file")" && sha256sum "$(basename "$file")" ) >> dist/SHA256SUMS
+              done
+          cat dist/SHA256SUMS
+
       - name: List what will be attached
         run: find dist -type f | sort
 
@@ -56,7 +70,7 @@ jobs:
           # Artifacts keep whatever path prefix upload-artifact gave them, so find the
           # archives rather than guessing the layout.
           assets="$(find dist -type f \
-            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.sh' \) | sort)"
+            \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.AppImage' -o -name '*.sh' -o -name 'SHA256SUMS' \) | sort)"
           echo "$assets"
           if [ -z "$assets" ]; then
             echo "no archives to publish" >&2
