@@ -813,6 +813,12 @@ fn is_wiki_url(url: &str) -> bool {
     }
 }
 
+/// The splash is the one screen that carries the update pill.
+fn is_splash_url(url: &str) -> bool {
+    let url = url.replace('\\', "/");
+    url.starts_with("file://") && url.contains("/assets/splash/")
+}
+
 /// Our own pages are the only files this window is allowed to show.
 fn is_launcher_page(url: &str) -> bool {
     let url = url.replace('\\', "/");
@@ -950,13 +956,17 @@ fn spawn_update_check(cache: String) {
     });
 }
 
-fn update_notice_js(version: &str) -> String {
-    UPDATE_JS
-        .replace("__VERSION__", version)
-        .replace("__RELEASE__", RELEASE_PAGE)
+/// The pill belongs to the splash: its shape, its animation and its words all live in
+/// that page. The launcher only says that a newer build exists, and where to read about it.
+fn splash_notice_js(version: &str) -> String {
+    format!(
+        "window.__pokemShowPill && window.__pokemShowPill(\"{}\", \"{}\")",
+        safe_version(version),
+        RELEASE_PAGE
+    )
 }
 
-/// Title first, because it survives fullscreen being toggled, then one line in the page.
+/// Title first, because it outlives the splash and survives fullscreen being toggled.
 fn apply_update_notice(version: &str) {
     let version = safe_version(version);
     if let Some(window) = WINDOW.lock().ok().and_then(|held| held.clone()) {
@@ -983,51 +993,24 @@ fn apply_update_notice(version: &str) {
     if frame.is_main() != 1 {
         return;
     }
+    let url = CefString::from(&frame.url()).to_string();
+    // The game page keeps its own design, so the pill is a splash thing. An answer that
+    // lands after the splash is gone waits for the next launch, and the title says so in
+    // the meantime.
+    if !is_splash_url(&url) {
+        if debug_echo() {
+            eprintln!("update notice: {version} is waiting for the next splash");
+        }
+        return;
+    }
     NOTICE_SHOWN.store(true, Ordering::SeqCst);
     if debug_echo() {
-        eprintln!("update notice: injected into the page");
+        eprintln!("update notice: shown on the splash");
     }
-    let script = CefString::from(update_notice_js(&version).as_str());
-    let source = CefString::from(GAME_URL);
+    let script = CefString::from(splash_notice_js(&version).as_str());
+    let source = CefString::from(url.as_str());
     frame.execute_java_script(Some(&script), Some(&source), 0);
 }
-
-/// Injected once per run, in the game page. It is text only: a link to the release and an
-/// x to dismiss it, over the bottom corner of the game rather than replacing anything.
-const UPDATE_JS: &str = r##"
-(function () {
-  function show() {
-    if (!document.body || document.getElementById("pokem-launcher-update")) return;
-    var box = document.createElement("div");
-    box.id = "pokem-launcher-update";
-    box.style.cssText = "position:fixed;right:12px;bottom:12px;z-index:2147483647;" +
-      "display:flex;gap:10px;align-items:center;background:#15151a;color:#f1f1f4;" +
-      "font:13px/1.35 system-ui,sans-serif;padding:9px 11px;border-radius:9px;" +
-      "border:1px solid #2f2f38;box-shadow:0 8px 24px rgba(0,0,0,.5)";
-    var link = document.createElement("a");
-    link.href = "__RELEASE__";
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = "Launcher __VERSION__ is out";
-    link.style.cssText = "color:#8fd6ff;font-weight:600;text-decoration:none";
-    var close = document.createElement("button");
-    close.type = "button";
-    close.textContent = "\u00d7";
-    close.setAttribute("aria-label", "Dismiss");
-    close.style.cssText = "background:none;border:0;color:#9a9aa2;font-size:18px;" +
-      "line-height:1;cursor:pointer;padding:0 2px";
-    close.onclick = function () { box.remove(); };
-    box.appendChild(link);
-    box.appendChild(close);
-    document.body.appendChild(box);
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", show, { once: true });
-  } else {
-    show();
-  }
-})();
-"##;
 
 fn main() {
     // macOS ships CEF as a framework that has to be loaded by hand before any other CEF
@@ -2020,6 +2003,14 @@ wrap_load_handler! {
                 }
             }
             let url = CefString::from(&frame.url()).to_string();
+            // The check can land before the splash does, so this is where the pill is
+            // asked to appear on a launch where the cache already had the answer.
+            if is_splash_url(&url) {
+                if let Some(version) = UPDATE_READY.lock().ok().and_then(|held| held.clone()) {
+                    apply_update_notice(&version);
+                }
+                return;
+            }
             if !url.starts_with("https://pokem.onl") {
                 return;
             }
@@ -2030,11 +2021,6 @@ wrap_load_handler! {
                 FILES_HELP_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
             );
             frame.execute_java_script(Some(&files_help), Some(&script_url), 0);
-
-            // A reload starts a fresh page, so the notice goes back in if it was dismissed.
-            if let Some(version) = UPDATE_READY.lock().ok().and_then(|held| held.clone()) {
-                apply_update_notice(&version);
-            }
 
             // A console that runs in the page, for testing the site's own API with the
             // session the page already has. Devtools is a second window, so it exists only
@@ -2178,6 +2164,21 @@ mod tests {
         assert_eq!(place_query("Goldenrod City · Poké Center"), "Goldenrod City");
         assert_eq!(place_query("  \n Goldenrod City \n"), "Goldenrod City");
         assert!(place_query("   ").is_empty());
+    }
+
+    #[test]
+    fn the_pill_belongs_to_the_splash() {
+        assert!(is_splash_url(&splash_url()));
+        assert!(!is_splash_url(GAME_URL));
+        assert!(!is_splash_url(&offline_url()));
+    }
+
+    #[test]
+    fn a_version_cannot_break_out_of_the_call() {
+        let js = splash_notice_js("v0.2.0\";alert(1);\"");
+        assert!(js.contains("\"v0.2.0alert1\""), "{js}");
+        assert!(!js.contains("alert(1)"), "{js}");
+        assert!(js.contains(RELEASE_PAGE), "{js}");
     }
 
     #[test]

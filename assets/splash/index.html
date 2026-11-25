@@ -79,9 +79,145 @@
     to   { opacity: 1; transform: none; }
   }
 
+  /* ---------- update pill ----------
+     The launcher shows this by calling window.__pokemShowPill, so a normal launch looks
+     exactly as it always did. It reads as white glass, like the disc above it, and
+     carries the ink and the accent from the rest of this screen. */
+  .slot { margin-top: 4.2vmin; }
+  .slot[hidden] { display: none; }
+
+  .update-pill {
+    --h: clamp(40px, 4.4vmin, 56px);
+    --w: calc(var(--h) * 6);
+    position: relative;
+    display: block;
+    height: var(--h);
+    width: var(--h);
+    border: 1px solid rgba(255,255,255,.95);
+    border-radius: 999px;
+    overflow: hidden;
+    cursor: pointer;
+    color: #1b1b20;
+    text-decoration: none;
+    background: linear-gradient(135deg, rgba(255,255,255,.94), rgba(255,255,255,.70));
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+            backdrop-filter: blur(16px) saturate(160%);
+    box-shadow:
+      0 12px 28px rgba(110,18,10,.34),
+      inset 0 1px 0 #fff,
+      inset 0 -1px 0 rgba(0,0,0,.06);
+    transform: scale(0);
+  }
+  .update-pill:hover { background: linear-gradient(135deg, #fff, rgba(255,255,255,.82)); }
+  .update-pill:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+
+  /* step 1: the circle pops in with a bounce. step 2: it stretches out from the middle */
+  .update-pill.play {
+    animation:
+      pill-pop     .7s  ease-in-out both,
+      pill-stretch .85s cubic-bezier(.22, 1.15, .36, 1) .62s both;
+  }
+
+  /* the content is a fixed width and always centred, so the pill just reveals it */
+  .inner {
+    position: absolute;
+    top: 0; bottom: 0;
+    left: 50%;
+    width: var(--w);
+    transform: translateX(-50%);
+    display: grid;
+    grid-template-columns: 1fr var(--h) 1fr;
+    align-items: center;
+  }
+
+  .label {
+    font: 700 calc(var(--h) * .30)/1 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: .01em;
+    white-space: nowrap;
+    opacity: 0;
+  }
+  .label.left  { text-align: right; padding-right: calc(var(--h) * .10); }
+  .label.right { text-align: left;  padding-left: calc(var(--h) * .10); }
+
+  .play .label.left  { animation: from-right .45s ease-out .85s both; }
+  .play .label.right { animation: from-left  .45s ease-out .85s both; }
+
+  .icon {
+    position: relative;
+    display: grid;
+    place-items: center;
+    height: var(--h);
+  }
+  .icon svg {
+    width: calc(var(--h) * .45);
+    height: calc(var(--h) * .45);
+    transform-origin: 50% 12%;
+    filter: drop-shadow(0 1px 1px rgba(0,0,0,.12));
+  }
+  .play .icon svg { animation: pill-ring .7s ease-in-out 1.35s both; }
+
+  .dot {
+    position: absolute;
+    top: calc(var(--h) * .25);
+    right: calc(var(--h) * .25);
+    width: calc(var(--h) * .18);
+    height: calc(var(--h) * .18);
+    border-radius: 50%;
+    background: #ee3b2b;
+    box-shadow: 0 0 0 2px rgba(255,255,255,.95);
+  }
+  .play .dot { animation: pill-dot .35s cubic-bezier(.3, 1.6, .5, 1) 1.25s both; }
+
+  @keyframes pill-pop {
+    0%   { transform: scale(0); }
+    50%  { transform: scale(1.22); }
+    75%  { transform: scale(.93); }
+    100% { transform: scale(1); }
+  }
+  @keyframes pill-stretch {
+    from { width: var(--h); }
+    to   { width: var(--w); }
+  }
+  @keyframes from-right {
+    from { opacity: 0; transform: translateX(14px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes from-left {
+    from { opacity: 0; transform: translateX(-14px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes pill-ring {
+    0%, 100% { transform: rotate(0); }
+    20% { transform: rotate(16deg); }
+    40% { transform: rotate(-13deg); }
+    60% { transform: rotate(8deg); }
+    80% { transform: rotate(-4deg); }
+  }
+  @keyframes pill-dot {
+    from { transform: scale(0); }
+    to   { transform: scale(1); }
+  }
+
+  /* The way out: the whole screen dips to the game's dark before the page changes, so
+     the swap does not flash red and then something else. */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: #0b171c;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 500ms ease;
+    z-index: 10;
+  }
+  body.bye .scrim { opacity: 1; }
+
   @media (prefers-reduced-motion: reduce) {
     .disc, .ball, .word { animation: none; }
     .ripple { display: none; }
+    .update-pill, .update-pill.play { animation: none; transform: none; width: var(--w); }
+    .label { opacity: 1; animation: none !important; }
+    .play .icon svg, .play .dot { animation: none; }
+    .scrim { transition-duration: 220ms; }
   }
 </style>
 </head>
@@ -105,23 +241,97 @@
         <circle cx="32" cy="24" r="7.6" fill="#fff" fill-opacity="0.75"/>
         <circle cx="50" cy="50" r="46.5" fill="none" stroke="#262626" stroke-width="7"/>
       </g>
-      </svg>
+    </svg>
     </div>
   </div>
   <div class="word">
     <span class="blue">POKEM ONLINE</span>
     <span class="fill">POKEM ONLINE</span>
   </div>
+  <div class="slot" id="slot" hidden>
+    <a class="update-pill" id="pill" href="#" target="_blank" rel="noreferrer">
+      <span class="inner">
+        <span class="label left">Update</span>
+        <span class="icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9z"/>
+            <path d="M10 20a2 2 0 0 0 4 0"/>
+          </svg>
+          <span class="dot"></span>
+        </span>
+        <span class="label right">Available</span>
+      </span>
+    </a>
+  </div>
 </div>
+<div class="scrim"></div>
 <audio id="snd" src="splash.mp3" preload="auto"></audio>
 <script>
   const game = "https://pokem.onl/";
   const snd = document.getElementById("snd");
-  let left = false;
-  const go = () => { if (!left) { left = true; location.replace(game); } };
-  snd.addEventListener("ended", go);
-  snd.play().catch(() => setTimeout(go, 900));
-  setTimeout(go, 2200);
+  const slot = document.getElementById("slot");
+  const pill = document.getElementById("pill");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const started = performance.now();
+
+  let leaving = false;
+  // When the pill is up, the splash stays long enough for its animation and a beat to
+  // read it. The launcher sets this by calling __pokemShowPill.
+  let pillDone = 0;
+  // A splash that waits on anything must not hold the player for ever.
+  const ceiling = started + 6500;
+
+  const wait = (ms) => new Promise((done) => setTimeout(done, ms));
+
+  function settled(root) {
+    const running = root.getAnimations ? root.getAnimations() : [];
+    return Promise.all(running.map((a) => a.finished.catch(() => {})));
+  }
+
+  // Called by the launcher, with the version and the release page, only when a newer
+  // build exists. Everything else about this screen stays the same.
+  window.__pokemShowPill = function (version, release) {
+    if (leaving || !slot.hidden) return;
+    pill.href = release || "#";
+    pill.title = "Launcher " + version + " is available";
+    pill.setAttribute("aria-label", "Launcher " + version + " is available");
+    slot.hidden = false;
+    pill.classList.add("play");
+    pillDone = performance.now() + (reduce ? 900 : 2050 + 1200);
+  };
+
+  // The sound decides when the entrance is over, but a blocked or broken file must not
+  // keep anyone on this screen.
+  function soundDone() {
+    return new Promise((resolve) => {
+      const once = () => resolve();
+      snd.addEventListener("ended", once, { once: true });
+      snd.addEventListener("error", once, { once: true });
+      setTimeout(once, 2600);
+      snd.play().catch(once);
+    });
+  }
+
+  function leave() {
+    if (leaving) return;
+    leaving = true;
+    document.body.classList.add("bye");
+    setTimeout(() => location.replace(game), reduce ? 220 : 500);
+  }
+
+  (async function () {
+    await soundDone();
+    if (reduce) {
+      await wait(150);
+    } else {
+      await settled(document);
+      await wait(150);
+    }
+    while (performance.now() < pillDone && performance.now() < ceiling) {
+      await wait(60);
+    }
+    leave();
+  })();
 </script>
 </body>
 </html>
