@@ -1,24 +1,104 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pokem Online</title>
 <style>
+  @font-face { font-family: "PokeSolid"; src: url("splash/fonts/Pokemon%20Solid.ttf"); }
+
+  :root {
+    --bg: #6fb0d4;                /* light blue, a shade down so the word still reads */
+    --disc: #fff;
+    --size: min(34vmin, 220px);   /* the white disc */
+    --ball: 74%;                  /* ball size inside the disc */
+    --spin: 1.6s;                 /* one full turn */
+  }
+
   html, body { height: 100%; margin: 0; }
   body {
     display: grid;
     place-content: center;
-    text-align: center;
-    gap: 10px;
-    padding: 0 8vmin;
-    background: #1b2850;
+    justify-items: center;
+    gap: 5vmin;
+    background: var(--bg);
     color: #fff;
     font: 16px/1.5 system-ui, sans-serif;
+    overflow: hidden;
+    user-select: none;
   }
-  h1 { margin: 0; font-size: 24px; font-weight: 600; }
-  p { margin: 0; opacity: .75; }
+
+  .disc {
+    width: var(--size);
+    height: var(--size);
+    border-radius: 50%;
+    background: var(--disc);
+    display: grid;
+    place-items: center;
+    box-shadow: 0 1.2vmin 4vmin rgba(0, 0, 0, .18);
+  }
+
+  /* The launcher's icon, not the splash's pokeball: assets/xynball.png is Icon/icon.png
+     at 512 px, so it stays crisp at this size and ships with the rest of assets/. */
+  #ball {
+    width: var(--ball);
+    height: var(--ball);
+    display: block;
+    animation: spin var(--spin) linear infinite;
+  }
+
+  /* The wordmark is the splash's: one stroked copy under one yellow copy. */
+  h1 {
+    position: relative;
+    margin: 0;
+    display: grid;
+    padding: .16em .4em;          /* room for the stroke to paint */
+    font-size: clamp(26px, 7vmin, 44px);
+    line-height: 1;
+  }
+  h1 span {
+    grid-area: 1 / 1;
+    font-family: "PokeSolid";
+    font-size: 1em;
+    letter-spacing: .02em;
+    white-space: nowrap;
+  }
+  h1 .blue { color: transparent; -webkit-text-stroke: .18em #2a75bb; }
+  h1 .fill { color: #ffcb05; }
+
+  /* dots hang off the right edge so the word itself stays centred */
+  h1::after {
+    content: "...";
+    position: absolute;
+    left: calc(100% - .1em);
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: .8em;
+    letter-spacing: .04em;
+    text-shadow: 0 2px 0 rgba(0, 0, 0, .18);
+    animation: dots 1.4s steps(1, end) infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes dots {
+    0%   { content: ""; }
+    25%  { content: "."; }
+    50%  { content: ".."; }
+    75%  { content: "..."; }
+  }
+
+  /* keep it turning, just calmer, so people can still tell it's alive */
+  @media (prefers-reduced-motion: reduce) {
+    :root { --spin: 6s; }
+    h1::after { animation: none; content: "..."; }
+  }
 </style>
-<h1>Can't reach pokem.onl</h1>
-<p>Checking the connection and trying again.</p>
+
+<div class="disc">
+  <img id="ball" src="xynball.png" alt="">
+</div>
+
+<h1 aria-label="Reconnecting"><span class="blue" aria-hidden="true">Reconnecting</span><span class="fill" aria-hidden="true">Reconnecting</span></h1>
+
 <script>
   // The launcher has no reload button, so the page retries itself. The shell shows this
   // page on a failed load and on a renderer that dies twice in a minute.
