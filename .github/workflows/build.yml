@@ -57,6 +57,33 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      # CEF asks Windows which version it is on before it starts the GPU process, and
+      # answers from the executable's manifest. rustc embeds none, so the shipped exe
+      # had no answer, the GPU process died on start, and some players could only run
+      # it with --in-process-gpu. mt.exe puts the manifest in, and reading it back
+      # proves it landed instead of trusting an exit code.
+      - name: Manifest (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $mt = (Get-Command mt.exe -ErrorAction SilentlyContinue).Source
+          if (-not $mt) {
+            $mt = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter mt.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.DirectoryName -match '\\x64$' } | Select-Object -First 1).FullName
+          }
+          if (-not $mt) { throw "mt.exe not found" }
+
+          & $mt -nologo -manifest packaging/windows/app.manifest "-outputresource:target/release/pokem-online.exe;#1"
+          if ($LASTEXITCODE -ne 0) { throw "mt.exe could not embed the manifest" }
+
+          & $mt -nologo "-inputresource:target/release/pokem-online.exe;#1" -out:target/release/embedded.manifest
+          if ($LASTEXITCODE -ne 0) { throw "the executable has no manifest" }
+          $xml = Get-Content target/release/embedded.manifest -Raw
+          foreach ($guid in @("8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a", "1f676c76-80e1-4239-95bb-83d0f6d0da78")) {
+            if (-not $xml.Contains($guid)) { throw "manifest is missing $guid" }
+          }
+          Write-Host "manifest embedded and checked"
+
       # The CEF download ships an unstripped libcef.so on Linux: 1.4 GB here against
       # the 277 MB a stripped one takes. Debug symbols are not used at runtime, and
       # every distro package of CEF is stripped, so strip it before it is packaged.
