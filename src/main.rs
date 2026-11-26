@@ -771,6 +771,80 @@ const FILES_HELP_JS: &str = r##"
 })();
 "##;
 
+/// The wiki answers what the game only half answers: where a species lives, what it
+/// learns, what it becomes. The game already carries the national number of every
+/// Pokémon it draws (`data-dex` on each portrait), so a small Poké Ball on the corner of
+/// that portrait opens the species' page. A plain link is all it takes, because the game
+/// window already sends any wiki address to the wiki window.
+///
+/// Two surfaces, not three. The party window's six icons are `<button>`s, and a link
+/// inside one is nesting a control in a control; the focused card and the party bar are
+/// not, so those two take it. The game redraws both, so a sweep puts the ball back after
+/// each redraw rather than assuming it stays.
+const WIKI_LINKS_JS: &str = r##"
+(function () {
+  if (window.__pkw) return;
+  window.__pkw = 1;
+  var WIKI = "https://pokem.onl/wiki#/pokemon/";
+  var SIZE = 15;
+
+  var css = document.createElement("style");
+  css.textContent = [
+    "a.pkwiki{position:absolute;z-index:2;width:" + SIZE + "px;height:" + SIZE + "px;",
+    "border-radius:50%;box-sizing:border-box;cursor:pointer;opacity:.55;",
+    "background:radial-gradient(circle,#fff 0 2.5px,#1c1c22 2.5px 3.5px,transparent 3.5px),",
+    "linear-gradient(#e8423a 0 44%,#1c1c22 44% 56%,#fff 56%);",
+    "box-shadow:0 0 0 1px rgba(0,0,0,.45),0 1px 2px rgba(0,0,0,.35);",
+    "transition:opacity .12s ease,transform .12s ease;}",
+    "a.pkwiki:hover,a.pkwiki:focus-visible{opacity:1;transform:scale(1.15);outline:none;}",
+  ].join("");
+  document.head.appendChild(css);
+
+  function put(host, canvas) {
+    var n = Number(canvas.dataset.dex);
+    if (!n) return;
+    var a = host.querySelector(":scope > a.pkwiki");
+    if (!a) {
+      a = document.createElement("a");
+      a.className = "pkwiki";
+      a.setAttribute("aria-label", "Open this Pokémon in the wiki");
+      a.title = "Wiki";
+      ["pointerdown", "mousedown", "click"].forEach(function (ev) {
+        a.addEventListener(ev, function (e) { e.stopPropagation(); });
+      });
+      host.appendChild(a);
+    }
+    a.href = WIKI + n;
+    a.style.left = (canvas.offsetLeft + canvas.offsetWidth - SIZE) + "px";
+    a.style.top = (canvas.offsetTop + 1) + "px";
+  }
+
+  function sweep() {
+    var mons = document.querySelectorAll("#party .mon[data-a]");
+    for (var i = 0; i < mons.length; i++) {
+      var c = mons[i].querySelector("canvas[data-dex]");
+      if (c) put(mons[i], c);
+    }
+    var cards = document.querySelectorAll(".pfocus article.card");
+    for (var j = 0; j < cards.length; j++) {
+      var d = cards[j].querySelector("canvas[data-dex]");
+      if (d) put(cards[j], d);
+    }
+  }
+
+  var queued = false;
+  function queue() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () { queued = false; sweep(); });
+  }
+
+  new MutationObserver(queue).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("resize", queue);
+  sweep();
+})();
+"##;
+
 /// Files that ship beside the binary: the splash, the offline page. A released build
 /// keeps `assets/` next to the executable, while `cargo build` leaves it in the repo,
 /// two levels up from `target/<profile>`.
@@ -2848,6 +2922,8 @@ wrap_load_handler! {
                 FILES_HELP_JS.replace("__FILES_HELP__", FILES_HELP_URL).as_str(),
             );
             frame.execute_java_script(Some(&files_help), Some(&script_url), 0);
+            let wiki_links = CefString::from(WIKI_LINKS_JS);
+            frame.execute_java_script(Some(&wiki_links), Some(&script_url), 0);
 
             // The check may land after the splash is gone, and a reload brings the page
             // back without the pill, so the game page asks for it again here.
@@ -3010,6 +3086,15 @@ mod tests {
         assert!(js.contains("\"v0.2.0alert1\""), "{js}");
         assert!(!js.contains("alert(1)"), "{js}");
         assert!(js.contains(RELEASE_PAGE), "{js}");
+    }
+
+    #[test]
+    fn the_wiki_ball_opens_the_species_route() {
+        // The number the game puts on each portrait is the national number, which is what
+        // the wiki's species route takes.
+        assert!(WIKI_LINKS_JS.contains("https://pokem.onl/wiki#/pokemon/"));
+        assert!(WIKI_LINKS_JS.contains("canvas[data-dex]"));
+        assert!(WIKI_LINKS_JS.contains("a.pkwiki"));
     }
 
     #[test]
