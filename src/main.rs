@@ -77,10 +77,10 @@ static DEVTOOLS_OPENED: AtomicBool = AtomicBool::new(false);
 /// reference until that task runs.
 static WINDOW: Mutex<Option<Window>> = Mutex::new(None);
 
-/// What the page last said about where you are: the map's own name from the minimap, and
-/// the floor name from `#where`. The wiki indexes maps by the towns and routes inside
-/// them, so the wiki key prefers the map.
-static WHERE: Mutex<(Option<String>, Option<String>)> = Mutex::new((None, None));
+/// The map's own name, as the minimap spells it. That is the only thing the wiki key
+/// needs: the wiki resolves a place name to a map page, and a floor name resolves to
+/// nothing, because buildings are not places in its map data.
+static WHERE: Mutex<Option<String>> = Mutex::new(None);
 
 /// The page's browser, held so the update task can reach its main frame long after the
 /// network round trip that decided the notice.
@@ -813,56 +813,6 @@ fn is_game_url(url: &str) -> bool {
     }
 }
 
-/// The wiki's places table keeps a row when its text contains the query, so extra words
-/// turn a match into an empty table. The game stacks a building and a floor under the map
-/// name, and this is the last place to take them off before the URL is built.
-fn place_query(text: &str) -> &str {
-    let mut head = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("");
-    for separator in [" · ", " | ", " • ", " — ", " – "] {
-        if let Some((before, _)) = head.split_once(separator) {
-            head = before.trim();
-        }
-    }
-    trim_floor(head)
-}
-
-fn trim_floor(text: &str) -> &str {
-    let lower = text.to_ascii_lowercase();
-    if let Some(at) = lower.rfind(" floor") {
-        let before = &text[..at];
-        let word = before.rsplit(' ').next().unwrap_or("");
-        if is_ordinal(word) {
-            return before[..before.len() - word.len()].trim_end();
-        }
-    }
-    match text.rsplit_once(' ') {
-        Some((before, last)) if is_floor_word(last) => before.trim_end(),
-        _ => text,
-    }
-}
-
-/// `1st`, `2nd`, `3rd`, `4th`, as they appear before the word floor.
-fn is_ordinal(word: &str) -> bool {
-    let digits = word.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-    let tail = word[digits.len()..].to_ascii_lowercase();
-    !digits.is_empty()
-        && digits.chars().all(|c| c.is_ascii_digit())
-        && matches!(tail.as_str(), "st" | "nd" | "rd" | "th")
-}
-
-/// `1F`, `B2F`, and the lower case the game sometimes uses.
-fn is_floor_word(word: &str) -> bool {
-    let core = word.trim_start_matches(['B', 'b']);
-    let Some(digits) = core.strip_suffix(['F', 'f']) else {
-        return false;
-    };
-    !digits.is_empty() && digits.len() <= 2 && digits.chars().all(|c| c.is_ascii_digit())
-}
-
 /// Percent-encode anything a hash query cannot carry, so a place name cannot smuggle its
 /// own `#` or `&` into the wiki's route.
 fn encode_query(text: &str) -> String {
@@ -878,17 +828,12 @@ fn encode_query(text: &str) -> String {
     out
 }
 
-/// F1 lands on the map you are standing on. The wiki's places page filters on name, key and
-/// the areas inside a map, so the map name narrows it to one row without fetching the
-/// wiki's data. With no place known, F1 opens the wiki itself.
-fn wiki_url_for(map: Option<&str>, floor: Option<&str>) -> String {
-    let wanted = [map, floor]
-        .into_iter()
-        .flatten()
-        .map(place_query)
-        .find(|text| !text.is_empty());
-    match wanted {
-        Some(text) => format!("{WIKI_URL}#/places?q={}", encode_query(text)),
+/// F1 lands on the map you are standing on. The wiki resolves the name to that map's own
+/// page and falls back to its filtered places list when nothing matches, so the name on
+/// its own is enough. With no map known, F1 opens the wiki itself.
+fn wiki_url_for(map: Option<&str>) -> String {
+    match map.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => format!("{WIKI_URL}#/place?q={}", encode_query(text)),
         None => WIKI_URL.to_string(),
     }
 }
@@ -2294,8 +2239,8 @@ wrap_window_delegate! {
                 CMD_WIKI => {
                     // Its own window, in this process, so it opens at once and the game
                     // keeps running behind it.
-                    let (map, floor) = WHERE.lock().map(|held| held.clone()).unwrap_or((None, None));
-                    open_wiki(&wiki_url_for(map.as_deref(), floor.as_deref()));
+                    let map = WHERE.lock().ok().and_then(|held| held.clone());
+                    open_wiki(&wiki_url_for(map.as_deref()));
                     1
                 }
                 CMD_MUTE => {
@@ -2851,7 +2796,7 @@ wrap_display_handler! {
                     };
                     // Kept for the wiki key, which wants the map rather than the floor.
                     if let Ok(mut held) = WHERE.lock() {
-                        *held = (field("map"), snapshot.place.clone());
+                        *held = field("map");
                     }
                     if let Some(tx) = PRESENCE_TX.get() {
                         let _ = tx.send(snapshot);
@@ -3006,20 +2951,17 @@ mod tests {
     #[test]
     fn the_wiki_key_opens_the_map_you_are_standing_on() {
         assert_eq!(
-            wiki_url_for(Some("Pallet Town"), None),
-            "https://pokem.onl/wiki#/places?q=Pallet%20Town"
-        );
-        // Indoors the minimap still names the map; the floor is only a fallback.
-        assert_eq!(
-            wiki_url_for(Some("Pallet Town"), Some("Red's House 1F")),
-            "https://pokem.onl/wiki#/places?q=Pallet%20Town"
+            wiki_url_for(Some("Saffron City")),
+            "https://pokem.onl/wiki#/place?q=Saffron%20City"
         );
         assert_eq!(
-            wiki_url_for(None, Some("Cerulean Gym")),
-            "https://pokem.onl/wiki#/places?q=Cerulean%20Gym"
+            wiki_url_for(Some("  Pallet Town  ")),
+            "https://pokem.onl/wiki#/place?q=Pallet%20Town"
         );
-        assert_eq!(wiki_url_for(None, None), WIKI_URL);
-        assert_eq!(wiki_url_for(Some("   "), None), WIKI_URL);
+        // The floor name is no longer a fallback: a building is not a place in the wiki's
+        // map data, so with no map the key opens the wiki itself.
+        assert_eq!(wiki_url_for(None), WIKI_URL);
+        assert_eq!(wiki_url_for(Some("   ")), WIKI_URL);
     }
 
     #[test]
@@ -3056,25 +2998,6 @@ mod tests {
     }
 
     #[test]
-    fn a_floor_is_not_part_of_the_map_name() {
-        assert_eq!(place_query("Goldenrod Poké Center 1F"), "Goldenrod Poké Center");
-        assert_eq!(place_query("Goldenrod Poké Center B1F"), "Goldenrod Poké Center");
-        assert_eq!(place_query("Goldenrod 2nd Floor"), "Goldenrod");
-        assert_eq!(place_query("Mt. Moon 1f"), "Mt. Moon");
-        // Two words that are the name, not a floor.
-        assert_eq!(place_query("Pallet Town"), "Pallet Town");
-        assert_eq!(place_query("Route 30"), "Route 30");
-    }
-
-    #[test]
-    fn only_the_line_that_names_the_map_is_kept() {
-        assert_eq!(place_query("Goldenrod\nPoké Center\n1F"), "Goldenrod");
-        assert_eq!(place_query("Goldenrod City · Poké Center"), "Goldenrod City");
-        assert_eq!(place_query("  \n Goldenrod City \n"), "Goldenrod City");
-        assert!(place_query("   ").is_empty());
-    }
-
-    #[test]
     fn the_pill_belongs_to_the_splash() {
         assert!(is_splash_url(&splash_url()));
         assert!(!is_splash_url(GAME_URL));
@@ -3092,8 +3015,8 @@ mod tests {
     #[test]
     fn a_place_name_cannot_add_its_own_route() {
         assert_eq!(
-            wiki_url_for(Some("A&B#/pokemon/1"), None),
-            "https://pokem.onl/wiki#/places?q=A%26B%23%2Fpokemon%2F1"
+            wiki_url_for(Some("A&B#/pokemon/1")),
+            "https://pokem.onl/wiki#/place?q=A%26B%23%2Fpokemon%2F1"
         );
     }
 
