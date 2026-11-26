@@ -777,10 +777,16 @@ const FILES_HELP_JS: &str = r##"
 /// that portrait opens the species' page. A plain link is all it takes, because the game
 /// window already sends any wiki address to the wiki window.
 ///
-/// Two surfaces, not three. The party window's six icons are `<button>`s, and a link
-/// inside one is nesting a control in a control; the focused card and the party bar are
-/// not, so those two take it. The game redraws both, so a sweep puts the ball back after
-/// each redraw rather than assuming it stays.
+/// Three places, and a reason to skip a fourth. The party window's six icons are
+/// `<button>`s, and a link inside one is nesting a control in a control, so they go
+/// without. The focused card, the party bar and the Pokédex page take it.
+///
+/// The Pokédex only gets it on a species you have met: an unseen one is drawn as
+/// `section.dexpage` with no portrait number, while a seen one is `article.dexpage.dx`,
+/// so the selector is the spoiler guard rather than a separate check.
+///
+/// The game redraws all three, so a sweep puts the ball back after each redraw rather
+/// than assuming it stays.
 const WIKI_LINKS_JS: &str = r##"
 (function () {
   if (window.__pkw) return;
@@ -800,9 +806,11 @@ const WIKI_LINKS_JS: &str = r##"
   ].join("");
   document.head.appendChild(css);
 
-  function put(host, canvas) {
-    var n = Number(canvas.dataset.dex);
+  function put(host, canvas, n) {
     if (!n) return;
+    /* The portrait's corner is measured against its offset parent, so make sure that is
+       the element the ball is appended to. */
+    if (getComputedStyle(host).position === "static") host.style.position = "relative";
     var a = host.querySelector(":scope > a.pkwiki");
     if (!a) {
       a = document.createElement("a");
@@ -823,12 +831,20 @@ const WIKI_LINKS_JS: &str = r##"
     var mons = document.querySelectorAll("#party .mon[data-a]");
     for (var i = 0; i < mons.length; i++) {
       var c = mons[i].querySelector("canvas[data-dex]");
-      if (c) put(mons[i], c);
+      if (c) put(mons[i], c, Number(c.dataset.dex));
     }
     var cards = document.querySelectorAll(".pfocus article.card");
     for (var j = 0; j < cards.length; j++) {
       var d = cards[j].querySelector("canvas[data-dex]");
-      if (d) put(cards[j], d);
+      if (d) put(cards[j], d, Number(d.dataset.dex));
+    }
+    /* The dex only draws a real page once a species is seen: an unseen one is a section
+       with no portrait number at all, so it never matches this. A form's page carries
+       the form's own number, which is what the wiki wants anyway. */
+    var heroes = document.querySelectorAll("article.dexpage.dx .dx-hero > canvas[data-spr]");
+    for (var k = 0; k < heroes.length; k++) {
+      var h = heroes[k].parentElement;
+      if (h) put(h, heroes[k], Number(heroes[k].dataset.spr));
     }
   }
 
@@ -3095,6 +3111,9 @@ mod tests {
         assert!(WIKI_LINKS_JS.contains("https://pokem.onl/wiki#/pokemon/"));
         assert!(WIKI_LINKS_JS.contains("canvas[data-dex]"));
         assert!(WIKI_LINKS_JS.contains("a.pkwiki"));
+        // The seen-only guard: a met species is `article.dexpage.dx`, an unseen one is a
+        // plain section, so the ball cannot land on a species the player has not met.
+        assert!(WIKI_LINKS_JS.contains("article.dexpage.dx"));
     }
 
     #[test]
