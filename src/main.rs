@@ -789,9 +789,10 @@ const FILES_HELP_JS: &str = r##"
 /// `section.dexpage` with no portrait number, while a seen one is `article.dexpage.dx`,
 /// so the selector is the spoiler guard rather than a separate check.
 ///
-/// A stall sells Pokémon and items, and its counter rows carry different things for each:
-/// a Pokémon lot keeps its number on the portrait, but an item lot carries only the item's
-/// name, so the item link names the item by words and lets the wiki resolve it.
+/// A stall sells Pokémon and items, but only the Pokémon lots take the ball. An item lot
+/// carries no id anywhere in the page, only the item's name, and the wiki has no route that
+/// takes a name, so an item lot goes without rather than pointing at a search that might
+/// land on the wrong thing.
 ///
 /// The game redraws all three, so a sweep puts the ball back after each redraw rather
 /// than assuming it stays.
@@ -800,7 +801,6 @@ const WIKI_LINKS_JS: &str = r##"
   if (window.__pkw) return;
   window.__pkw = 1;
   var POKE = "https://pokem.onl/wiki#/pokemon/";
-  var ITEM = "https://pokem.onl/wiki#/item?q=";
   var SIZE = 15;
 
   var css = document.createElement("style");
@@ -866,15 +866,13 @@ const WIKI_LINKS_JS: &str = r##"
       if (h) put(h, heroes[k], POKE + Number(heroes[k].dataset.spr));
     }
     /* A stall's counter, and only a stall's: the same row markup is the bag's and every
-       shop's, and the window says which one it is. An egg has no number and gets no ball. */
+       shop's, and the window says which one it is. A Pokémon lot keeps its number on the
+       portrait, so it takes the ball; an item lot carries only the item's name and no id,
+       so it goes without. An egg has no number either. */
     var lots = document.querySelectorAll('.window[data-win="stall"] ul.wares > li.ware');
     for (var j = 0; j < lots.length; j++) {
-      var tile = lots[j].querySelector("i.w-ico");
-      if (!tile) continue;
-      var mon = tile.querySelector("canvas[data-dex]");
-      if (mon) { corner(tile, POKE + Number(mon.dataset.dex)); continue; }
-      var name = lots[j].querySelector(".w-what > b");
-      if (name && name.textContent) corner(tile, ITEM + encodeURIComponent(name.textContent.trim()));
+      var tile = lots[j].querySelector("i.w-ico"), mon = tile && tile.querySelector("canvas[data-dex]");
+      if (mon) corner(tile, POKE + Number(mon.dataset.dex));
     }
   }
 
@@ -3147,14 +3145,20 @@ mod tests {
     }
 
     #[test]
-    fn the_wiki_ball_reaches_a_stalls_items_too() {
+    fn the_wiki_ball_reaches_a_stalls_pokemon() {
         // A stall's counter rows are the bag's and every shop's markup, so the window has
         // to say which one it is or the ball would land in all of them.
         assert!(WIKI_LINKS_JS.contains(".window[data-win=\"stall\"]"));
         assert!(WIKI_LINKS_JS.contains("ul.wares > li.ware"));
-        // An item lot carries no id, only its name, so the item link names it by words.
-        assert!(WIKI_LINKS_JS.contains("https://pokem.onl/wiki#/item?q="));
-        assert!(WIKI_LINKS_JS.contains("encodeURIComponent"));
+        assert!(WIKI_LINKS_JS.contains("i.w-ico"));
+    }
+
+    #[test]
+    fn a_stalls_items_are_left_alone() {
+        // An item lot carries no id anywhere in the page, only the item's name, and the
+        // wiki has no route that takes a name: a link would have to guess. Pokémon only.
+        assert!(!WIKI_LINKS_JS.contains("#/item"));
+        assert!(!WIKI_LINKS_JS.contains("w-what"));
     }
 
     #[test]
