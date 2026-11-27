@@ -62,8 +62,11 @@ const RELEASE_API: &str =
     "https://api.github.com/repos/ArisSwift/Pokemon-Online-Launcher/releases/latest";
 const RELEASE_PAGE: &str =
     "https://github.com/ArisSwift/Pokemon-Online-Launcher/releases/latest";
-/// A day is often enough for a release notice, and it keeps the API call rare.
-const UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
+/// An hour, so a release is noticed the same day it goes out. That is one call an hour,
+/// which is the whole of GitHub's 60 an hour limit for an address with no token: a
+/// refused check stays quiet and the next one catches up, so the worst case is a notice
+/// arriving late, never an error.
+const UPDATE_INTERVAL_SECS: u64 = 60 * 60;
 
 static LAST_RECOVERY_MS: AtomicU64 = AtomicU64::new(0);
 /// Set while the browser is closing, so a renderer going away is not mistaken for a
@@ -1048,7 +1051,7 @@ fn fetch_latest_tag() -> Option<String> {
     value.get("tag_name")?.as_str().map(str::to_owned)
 }
 
-/// Once a day, ask GitHub for the newest release. A failed check stays quiet: a missing
+/// Once an hour, ask GitHub for the newest release. A failed check stays quiet: a missing
 /// notice is not worth an error on anyone's screen.
 fn spawn_update_check(cache: String) {
     std::thread::spawn(move || {
