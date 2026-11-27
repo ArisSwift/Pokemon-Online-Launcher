@@ -775,18 +775,23 @@ const FILES_HELP_JS: &str = r##"
 "##;
 
 /// The wiki answers what the game only half answers: where a species lives, what it
-/// learns, what it becomes. The game already carries the national number of every
-/// Pokémon it draws (`data-dex` on each portrait), so a small Poké Ball on the corner of
-/// that portrait opens the species' page. A plain link is all it takes, because the game
-/// window already sends any wiki address to the wiki window.
+/// learns, what it becomes, and where an item comes from. The game already carries the
+/// national number of every Pokémon it draws (`data-dex` on each portrait), so a small
+/// Poké Ball on the corner of that portrait opens the species' page. A plain link is all
+/// it takes, because the game window already sends any wiki address to the wiki window.
 ///
-/// Three places, and a reason to skip a fourth. The party window's six icons are
-/// `<button>`s, and a link inside one is nesting a control in a control, so they go
-/// without. The focused card, the party bar and the Pokédex page take it.
+/// Three places. The focused card in the party window, the Pokédex page, and a stall's
+/// counter. The party bar is not one of them: it sits under the world while you walk,
+/// where a look-up is a thing to open, not a thing to tap by accident, and its slots are
+/// small enough that the ball would eat a fifth of the portrait.
 ///
 /// The Pokédex only gets it on a species you have met: an unseen one is drawn as
 /// `section.dexpage` with no portrait number, while a seen one is `article.dexpage.dx`,
 /// so the selector is the spoiler guard rather than a separate check.
+///
+/// A stall sells Pokémon and items, and its counter rows carry different things for each:
+/// a Pokémon lot keeps its number on the portrait, but an item lot carries only the item's
+/// name, so the item link names the item by words and lets the wiki resolve it.
 ///
 /// The game redraws all three, so a sweep puts the ball back after each redraw rather
 /// than assuming it stays.
@@ -794,7 +799,8 @@ const WIKI_LINKS_JS: &str = r##"
 (function () {
   if (window.__pkw) return;
   window.__pkw = 1;
-  var WIKI = "https://pokem.onl/wiki#/pokemon/";
+  var POKE = "https://pokem.onl/wiki#/pokemon/";
+  var ITEM = "https://pokem.onl/wiki#/item?q=";
   var SIZE = 15;
 
   var css = document.createElement("style");
@@ -805,41 +811,51 @@ const WIKI_LINKS_JS: &str = r##"
     "linear-gradient(#e8423a 0 44%,#1c1c22 44% 56%,#fff 56%);",
     "box-shadow:0 0 0 1px rgba(0,0,0,.45),0 1px 2px rgba(0,0,0,.35);",
     "transition:opacity .12s ease,transform .12s ease;}",
+    /* A stall lot's picture is a tile with the sprite centred inside it, so the ball sits on
+       the tile's corner instead of being measured against whatever the picture turns out to
+       be: an item's icon arrives after the row does and would drag the ball with it. */
+    "a.pkwiki.corner{left:auto;right:-3px;top:-3px;}",
     "a.pkwiki:hover,a.pkwiki:focus-visible{opacity:1;transform:scale(1.15);outline:none;}",
   ].join("");
   document.head.appendChild(css);
 
-  function put(host, canvas, n) {
-    if (!n) return;
-    /* The portrait's corner is measured against its offset parent, so make sure that is
-       the element the ball is appended to. */
-    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+  /* The ball for `host`, made once and reused: a redraw of the row must not leave two. */
+  function link(host, corner) {
     var a = host.querySelector(":scope > a.pkwiki");
     if (!a) {
       a = document.createElement("a");
-      a.className = "pkwiki";
-      a.setAttribute("aria-label", "Open this Pokémon in the wiki");
+      a.className = corner ? "pkwiki corner" : "pkwiki";
+      a.setAttribute("aria-label", "Open this in the wiki");
       a.title = "Wiki";
       ["pointerdown", "mousedown", "click"].forEach(function (ev) {
         a.addEventListener(ev, function (e) { e.stopPropagation(); });
       });
       host.appendChild(a);
     }
-    a.href = WIKI + n;
-    a.style.left = (canvas.offsetLeft + canvas.offsetWidth - SIZE) + "px";
-    a.style.top = (canvas.offsetTop + 1) + "px";
+    return a;
+  }
+
+  function put(host, pic, href) {
+    if (!href) return;
+    /* The picture's corner is measured against its offset parent, so make sure that is the
+       element the ball is appended to. */
+    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+    var a = link(host, false);
+    a.href = href;
+    a.style.left = (pic.offsetLeft + pic.offsetWidth - SIZE) + "px";
+    a.style.top = (pic.offsetTop + 1) + "px";
+  }
+
+  function corner(host, href) {
+    if (!href) return;
+    link(host, true).href = href;
   }
 
   function sweep() {
-    var mons = document.querySelectorAll("#party .mon[data-a]");
-    for (var i = 0; i < mons.length; i++) {
-      var c = mons[i].querySelector("canvas[data-dex]");
-      if (c) put(mons[i], c, Number(c.dataset.dex));
-    }
     var cards = document.querySelectorAll(".pfocus article.card");
-    for (var j = 0; j < cards.length; j++) {
-      var d = cards[j].querySelector("canvas[data-dex]");
-      if (d) put(cards[j], d, Number(d.dataset.dex));
+    for (var i = 0; i < cards.length; i++) {
+      var c = cards[i].querySelector("canvas[data-dex]");
+      if (c) put(cards[i], c, POKE + Number(c.dataset.dex));
     }
     /* The dex only draws a real page once a species is seen: an unseen one is a section
        with no portrait number at all, so it never matches this. A form's page carries
@@ -847,7 +863,18 @@ const WIKI_LINKS_JS: &str = r##"
     var heroes = document.querySelectorAll("article.dexpage.dx .dx-hero > canvas[data-spr]");
     for (var k = 0; k < heroes.length; k++) {
       var h = heroes[k].parentElement;
-      if (h) put(h, heroes[k], Number(heroes[k].dataset.spr));
+      if (h) put(h, heroes[k], POKE + Number(heroes[k].dataset.spr));
+    }
+    /* A stall's counter, and only a stall's: the same row markup is the bag's and every
+       shop's, and the window says which one it is. An egg has no number and gets no ball. */
+    var lots = document.querySelectorAll('.window[data-win="stall"] ul.wares > li.ware');
+    for (var j = 0; j < lots.length; j++) {
+      var tile = lots[j].querySelector("i.w-ico");
+      if (!tile) continue;
+      var mon = tile.querySelector("canvas[data-dex]");
+      if (mon) { corner(tile, POKE + Number(mon.dataset.dex)); continue; }
+      var name = lots[j].querySelector(".w-what > b");
+      if (name && name.textContent) corner(tile, ITEM + encodeURIComponent(name.textContent.trim()));
     }
   }
 
@@ -3117,6 +3144,24 @@ mod tests {
         // The seen-only guard: a met species is `article.dexpage.dx`, an unseen one is a
         // plain section, so the ball cannot land on a species the player has not met.
         assert!(WIKI_LINKS_JS.contains("article.dexpage.dx"));
+    }
+
+    #[test]
+    fn the_wiki_ball_reaches_a_stalls_items_too() {
+        // A stall's counter rows are the bag's and every shop's markup, so the window has
+        // to say which one it is or the ball would land in all of them.
+        assert!(WIKI_LINKS_JS.contains(".window[data-win=\"stall\"]"));
+        assert!(WIKI_LINKS_JS.contains("ul.wares > li.ware"));
+        // An item lot carries no id, only its name, so the item link names it by words.
+        assert!(WIKI_LINKS_JS.contains("https://pokem.onl/wiki#/item?q="));
+        assert!(WIKI_LINKS_JS.contains("encodeURIComponent"));
+    }
+
+    #[test]
+    fn the_party_bar_is_left_alone() {
+        // The bar sits under the world while the player walks; a look-up belongs where a
+        // window is open, not on the bar. Removing the surface is the point of the test.
+        assert!(!WIKI_LINKS_JS.contains("#party"));
     }
 
     #[test]
